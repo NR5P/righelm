@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = ["crates/ftdx3000-cat", "crates/ftdx3000-rig", "crates/ferrite"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+ftdx3000-cat = { path = "crates/ftdx3000-cat" }
+ftdx3000-rig = { path = "crates/ftdx3000-rig" }
+log = "0.4"

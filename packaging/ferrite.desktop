@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Ferrite
+GenericName=Rig Control
+Comment=Control and share a Yaesu FTDX3000 transceiver
+Exec=ferrite
+Icon=ferrite
+Terminal=false
+Categories=HamRadio;Utility;
+StartupWMClass=ferrite

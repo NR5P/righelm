@@ -1,0 +1,16 @@
+[package]
+name = "ferrite"
+description = "Ferrite — rig control for the Yaesu FTDX3000"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crossbeam-channel = "0.5.17"
+eframe = "0.37.0"
+env_logger = "0.11.11"
+ftdx3000-cat.workspace = true
+ftdx3000-rig.workspace = true
+log.workspace = true
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.8"

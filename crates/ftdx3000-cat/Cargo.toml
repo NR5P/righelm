@@ -1,0 +1,8 @@
+[package]
+name = "ftdx3000-cat"
+description = "Yaesu FTDX3000 CAT protocol: framing, command table, menu table and radio state"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
