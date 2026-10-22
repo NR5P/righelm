@@ -45,7 +45,7 @@ Binaries in `target/release/`:
 | binary          | what                                                         |
 |-----------------|--------------------------------------------------------------|
 | `righelm`       | the desktop app                                              |
-| `righelmd`      | headless server (same config, no window), `--detect` lists hardware |
+| `righelmd`      | headless server (same config, no window), `--detect` lists hardware, `--discover` lists RigHelm servers on the LAN |
 | `righelm-sim`   | a simulated FTDX3000 on a PTY for testing without the radio  |
 
 Your user must be in the `dialout` group to open the radio's serial port.

@@ -1,14 +1,14 @@
 //! Headless rig server: owns the radio's CAT port and shares it through
 //! virtual serial ports and a rigctld-compatible TCP server.
 //!
-//!     righelmd [--port PATH] [--baud N] [--no-rigctld] [--detect]
+//!     righelmd [--port PATH] [--baud N] [--no-rigctld] [--detect] [--discover]
 //!
 //! Uses the same config file as the GUI (~/.config/ftdx3000/config.toml).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use ftdx3000_rig::{Config, LinkState, Services, detect};
+use ftdx3000_rig::{Config, LinkState, Services, detect, remote};
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -33,8 +33,12 @@ fn main() {
                 print_detect();
                 return;
             }
+            "--discover" => {
+                print_discover();
+                return;
+            }
             "-h" | "--help" => {
-                println!("righelmd [--port PATH] [--baud N] [--rigctld ADDR:PORT | --no-rigctld] [--no-menu] [--detect]");
+                println!("righelmd [--port PATH] [--baud N] [--rigctld ADDR:PORT | --no-rigctld] [--no-menu] [--detect] [--discover]");
                 return;
             }
             other => {
@@ -75,6 +79,33 @@ fn main() {
     // Un-keys the radio if we keyed it, turns AI off, removes the port links.
     println!("shutting down");
     services.shutdown();
+}
+
+/// Listens for RigHelm servers on the LAN for a few seconds and lists them.
+fn print_discover() {
+    let discovery = match remote::Discovery::start() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("discovery failed to start: {e}");
+            std::process::exit(1);
+        }
+    };
+    println!("Looking for RigHelm servers on UDP {} ...", remote::DISCOVERY_PORT);
+    std::thread::sleep(Duration::from_secs(6));
+    let servers = discovery.servers();
+    if servers.is_empty() {
+        println!("No RigHelm servers found.");
+    }
+    for f in servers {
+        println!(
+            "{:<20} {:<22} radio={} audio={} password={}",
+            f.name,
+            f.addr,
+            f.radio,
+            if f.audio { "yes" } else { "no" },
+            if f.auth { "yes" } else { "no" }
+        );
+    }
 }
 
 fn print_detect() {
