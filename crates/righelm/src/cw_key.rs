@@ -96,7 +96,7 @@ pub fn panel(app: &mut App, ui: &mut Ui) {
     let wpm = app.rig().state().key_speed.max(4);
     egui::Frame::group(ui.style()).stroke(egui::Stroke::new(2.0, RED)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("● COMPUTER KEY").strong().color(RED));
             if !st.ready && st.error.is_none() {
                 ui.label(RichText::new("opening the keying line…").color(AMBER));
@@ -110,8 +110,8 @@ pub fn panel(app: &mut App, ui: &mut Ui) {
                 }
             }
             ui.separator();
-            ui.label(format!("{wpm} WPM"));
-            ui.label(RichText::new("(CW group: Speed)").weak());
+            ui.add(egui::Label::new(format!("{wpm} WPM")).extend());
+            ui.add(egui::Label::new(RichText::new("(CW group: Speed)").weak()).extend());
             ui.separator();
             if ui.checkbox(&mut cfg.sidetone, "Sidetone here").on_hover_text("Play a tone on this computer's speakers while keying").changed() {
                 rearm = true;
@@ -123,7 +123,7 @@ pub fn panel(app: &mut App, ui: &mut Ui) {
 
         // The pad: press and hold. Left = dit (or the straight key), right = dah.
         let straight = app.services.config.cw.mode == KeyerMode::Straight;
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 90.0), Sense::click_and_drag());
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 110.0), Sense::click_and_drag());
         let (primary, secondary) = ui.input(|i| {
             let from_pad = i.pointer.press_origin().is_some_and(|p| rect.contains(p));
             (from_pad && i.pointer.button_down(PointerButton::Primary), from_pad && i.pointer.button_down(PointerButton::Secondary))
@@ -152,7 +152,7 @@ pub fn panel(app: &mut App, ui: &mut Ui) {
             let (left, right) = rect.split_left_right_at_fraction(0.5);
             for (half, on, name, how) in [
                 (left.shrink2(egui::vec2(2.0, 0.0)), paddles.0, "DIT", "left button  ·  [ key"),
-                (right.shrink2(egui::vec2(2.0, 0.0)), paddles.1, "DAH", "right button / two-finger press  ·  ] key"),
+                (right.shrink2(egui::vec2(2.0, 0.0)), paddles.1, "DAH", "right button  ·  ] key"),
             ] {
                 p.rect_filled(half, 8.0, lit(on));
                 p.text(half.center() - egui::vec2(0.0, 12.0), egui::Align2::CENTER_CENTER, name, big.clone(), text_color(on));
@@ -162,7 +162,7 @@ pub fn panel(app: &mut App, ui: &mut Ui) {
 
         ui.horizontal(|ui| {
             ui.label("Send text");
-            let edit = ui.add(egui::TextEdit::singleline(&mut app.cw_key.text).desired_width(360.0).hint_text("CQ CQ DE ..."));
+            let edit = ui.add(egui::TextEdit::singleline(&mut app.cw_key.text).desired_width((ui.available_width() - 190.0).max(120.0)).hint_text("CQ CQ DE ..."));
             let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             if (ui.button(RichText::new("Send").strong()).on_hover_text("Transmits the text in CW").clicked() || enter) && !app.cw_key.text.trim().is_empty() {
                 if let Some(k) = app.services.cw() {

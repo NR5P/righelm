@@ -120,6 +120,11 @@ impl App {
 
     fn screenshot_step(&mut self, ctx: &egui::Context) {
         let Some((dir, at, idx)) = &mut self.screenshots else { return };
+        // Layout check: shoot the Operate page with the computer key open.
+        if *idx == 0 && std::env::var_os("RIGHELM_CW_TEST").is_some() && self.services.cw().is_none() && at.elapsed() > Duration::from_secs(1) {
+            self.services.cw_arm(true);
+            return;
+        }
         // Give the radio time to report its state before the first shot.
         let wait = if *idx == 0 { Duration::from_secs(4) } else { Duration::from_millis(900) };
         if *idx > 0 && *idx <= SCREENSHOT_TABS.len() {

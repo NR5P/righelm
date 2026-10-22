@@ -55,8 +55,12 @@ fn mic_switch(app: &mut App, ui: &mut Ui) {
             app.services.set_computer_mic(!computer);
         }
         if computer {
+            // A thin bar, no taller than the button: the rows below stay put.
             let frac = ((level + 60.0) / 60.0).clamp(0.0, 1.0);
-            widgets::Meter { label: "", fraction: frac, text: String::new(), color: GREEN, ticks: &[], red_from: Some(0.9), peak: None }.show(ui, 90.0);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(90.0, 12.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(30, 32, 38));
+            let fill = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * frac, rect.height()));
+            ui.painter().rect_filled(fill, 2.0, if frac > 0.9 { RED } else { GREEN });
             if sending {
                 ui.label(RichText::new("● ON AIR").color(RED).strong());
             }
@@ -78,12 +82,20 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     }
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.add_enabled_ui(live, |ui| {
+            let mut pad_beside = false;
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| vfo_block(app, ui, &rig, &s, live));
                 ui.add_space(16.0);
                 ui.vertical(|ui| meters_block(app, ui, &rig, &s));
+                // The computer key's pad opens beside the meters (shorter than
+                // them), so turning it on moves nothing.
+                if app.services.cw().is_some() && ui.available_width() >= 340.0 {
+                    ui.add_space(16.0);
+                    ui.vertical(|ui| crate::cw_key::panel(app, ui));
+                    pad_beside = true;
+                }
             });
-            if app.services.cw().is_some() {
+            if app.services.cw().is_some() && !pad_beside {
                 ui.add_space(6.0);
                 crate::cw_key::panel(app, ui);
             }
@@ -288,18 +300,20 @@ fn meters_block(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
         }
         e.0
     };
-    if !tx {
-        let raw = s.s_meter;
+    // Every meter is always shown (blank when it doesn't apply), so nothing
+    // below them moves when the radio goes between receive and transmit.
+    {
+        let raw = if tx { 0 } else { s.s_meter };
         let f = raw as f32 / 255.0;
         let pk = peak(Meter::S, f);
         widgets::Meter {
             label: "S",
             fraction: f,
-            text: types::s_meter_text(raw),
+            text: if tx { "—".into() } else { types::s_meter_text(raw) },
             color: GREEN,
             ticks: &[(0.0, "0"), (40.0 / 255.0, "3"), (80.0 / 255.0, "6"), (130.0 / 255.0, "9"), (172.0 / 255.0, "+20"), (220.0 / 255.0, "+40"), (1.0, "+60")],
             red_from: Some(130.0 / 255.0),
-            peak: Some(pk),
+            peak: (!tx).then_some(pk),
         }
         .show(ui, w);
     }
@@ -328,7 +342,6 @@ fn meters_block(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
         peak: None,
     }
     .show(ui, w);
-    // Always shown (blank on receive) so the buttons below never move when keying.
     let txt = |t: String| if tx { t } else { "—".into() };
     let alc = if tx { get(Meter::Alc) as f32 / 255.0 } else { 0.0 };
     widgets::Meter { label: "ALC", fraction: alc, text: txt(format!("{:.0}%", alc * 100.0)), color: CYAN, ticks: &[], red_from: Some(0.5), peak: None }
@@ -340,17 +353,15 @@ fn meters_block(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
     widgets::Meter { label: "ID", fraction: id / 25.0, text: txt(format!("{id:.1} A")), color: CYAN, ticks: &[], red_from: None, peak: None }
         .show(ui, w);
     let vdd = interpolate(&types::VDD_CAL, get(Meter::Vdd));
-    if s.meter(Meter::Vdd).is_some() {
-        ui.label(RichText::new(format!("VDD {vdd:.1} V   ·   meter calibration is approximate")).weak().size(11.0));
-    }
+    let vdd = if s.meter(Meter::Vdd).is_some() { format!("{vdd:.1} V") } else { "—".into() };
+    ui.label(RichText::new(format!("VDD {vdd}   ·   meter calibration is approximate")).weak().size(11.0));
 
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         let txing = s.transmitting();
         let mox = egui::Button::new(RichText::new(if txing { "TX  (click to stop)" } else { "MOX / PTT" }).strong().size(16.0).color(if txing { Color32::WHITE } else { RED }))
-            .min_size(egui::vec2(170.0, 36.0))
             .fill(if txing { RED } else { Color32::from_rgb(40, 20, 20) });
-        if ui.add(mox).on_hover_text("Transmits! Uses CAT TX (TX1;/TX0;). Or hold the space bar to talk (Settings).").clicked() {
+        if ui.add_sized([190.0, 36.0], mox).on_hover_text("Transmits! Uses CAT TX (TX1;/TX0;). Or hold the space bar to talk (Settings).").clicked() {
             rig.send(if txing { "TX0;" } else { "TX1;" });
         }
         let tuning = s.tuner == 2;
