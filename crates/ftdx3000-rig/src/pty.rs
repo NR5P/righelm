@@ -116,14 +116,21 @@ impl Pty {
     /// exclusive mode (`TIOCEXCL`, which e.g. the Rust `serialport` crate
     /// does by default), Linux keeps that flag while our master stays open
     /// and every later open fails with EBUSY.
+    ///
+    /// macOS clears exclusive mode when the last program closes the slave,
+    /// so the PTY is kept there: swapping it would race a program that
+    /// reopens the port straight away, which would get the abandoned slave.
     pub fn renew(&mut self) -> io::Result<()> {
-        let fresh = Pty::open(None)?;
-        if let Some(link) = &self.link_path {
-            replace_symlink(link, &fresh.slave_path)?;
+        #[cfg(target_os = "linux")]
+        {
+            let fresh = Pty::open(None)?;
+            if let Some(link) = &self.link_path {
+                replace_symlink(link, &fresh.slave_path)?;
+            }
+            // `fresh` has no link, so dropping it later removes nothing.
+            self.master = fresh.master.try_clone()?;
+            self.slave_path = fresh.slave_path.clone();
         }
-        // `fresh` has no link, so dropping it later removes nothing.
-        self.master = fresh.master.try_clone()?;
-        self.slave_path = fresh.slave_path.clone();
         self.ahead.clear();
         Ok(())
     }
@@ -162,12 +169,30 @@ impl Pty {
                 Ok(0) => Ok(PtyEvent::Hangup),
                 Ok(n) => {
                     self.ahead.extend_from_slice(&buf[..n]);
+                    let _ = self.keep_raw();
                     Ok(PtyEvent::Readable)
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(PtyEvent::Timeout),
                 Err(_) => Ok(PtyEvent::Hangup),
             }
         }
+    }
+
+    /// macOS resets a terminal's settings whenever a program opens it, so the
+    /// raw mode set in `open` is gone once a client connects. Without it the
+    /// client's reads wait for a newline, and everything we write is echoed
+    /// back to us as if the client had sent it (an answer `TX1;` would key
+    /// the radio). Restored through the master before we answer anything;
+    /// a client that set raw mode itself is left alone.
+    #[cfg(not(target_os = "linux"))]
+    fn keep_raw(&self) -> io::Result<()> {
+        use nix::sys::termios::LocalFlags;
+        let mut t = tcgetattr(&self.master).map_err(io::Error::from)?;
+        if t.local_flags.intersects(LocalFlags::ICANON | LocalFlags::ECHO) {
+            cfmakeraw(&mut t);
+            tcsetattr(&self.master, SetArg::TCSANOW, &t).map_err(io::Error::from)?;
+        }
+        Ok(())
     }
 
     /// A handle for answers and auto-information.
@@ -302,6 +327,8 @@ mod tests {
         pty.master.write_all(b"FA14074000;").unwrap();
         let n = client.read(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"FA14074000;");
+        // Our answer must not come back to us as client input (echo).
+        assert_eq!(pty.wait(Duration::from_millis(100)).unwrap(), PtyEvent::Timeout);
         drop(client);
         assert_eq!(pty.wait(Duration::from_millis(100)).unwrap(), PtyEvent::Hangup);
         drop(pty);

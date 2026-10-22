@@ -47,7 +47,13 @@ pub const BAUD_RATES: [u32; 4] = [38400, 19200, 9600, 4800];
 /// Open the serial port with exclusive access (`TIOCEXCL`): other programs
 /// must go through our virtual ports instead of fighting over the radio.
 pub fn open_serial(s: &SerialSettings, baud: u32, flow: FlowControl) -> io::Result<Link> {
-    let port = serialport::new(&s.path, baud)
+    // macOS sets the baud rate with an ioctl that pseudo-terminals (the
+    // simulator) reject with ENOTTY; `serialport` skips it for a rate of 0.
+    #[cfg(target_os = "macos")]
+    let port_baud = if is_pty(&s.path) { 0 } else { baud };
+    #[cfg(not(target_os = "macos"))]
+    let port_baud = baud;
+    let port = serialport::new(&s.path, port_baud)
         .data_bits(serialport::DataBits::Eight)
         .parity(serialport::Parity::None)
         .stop_bits(if s.stop_bits == 1 { serialport::StopBits::One } else { serialport::StopBits::Two })
@@ -74,6 +80,15 @@ pub fn open_serial(s: &SerialSettings, baud: u32, flow: FlowControl) -> io::Resu
         writer: Box::new(port),
         description: format!("{} @ {baud} bps, 8N{}, {flow_txt}", s.path, s.stop_bits.clamp(1, 2)),
     })
+}
+
+/// Is `path` (or the link it points through) a macOS PTY slave, `/dev/ttysN`?
+#[cfg(target_os = "macos")]
+fn is_pty(path: &str) -> bool {
+    std::fs::canonicalize(path)
+        .ok()
+        .and_then(|p| p.to_str().and_then(|s| s.strip_prefix("/dev/ttys")).map(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
+        .unwrap_or(false)
 }
 
 /// Send `ID;` and wait for an `ID....;` answer.
