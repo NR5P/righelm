@@ -1,5 +1,5 @@
-//! Keying CW from this computer: the ARM switch, a touchpad/mouse key pad,
-//! keyboard paddles and a text line.
+//! Keying CW from this computer: the RADIO KEY / COMPUTER KEY switch, a
+//! touchpad/mouse key pad, keyboard paddles and a text line.
 
 use eframe::egui::{self, Color32, PointerButton, RichText, Sense, Ui};
 use ftdx3000_rig::cw::{Input, KeyerMode};
@@ -14,28 +14,76 @@ pub struct CwKeyState {
     sent: (bool, bool),
 }
 
-/// The ARM switch (always shown on the Operate page).
+const RADIO_KEY_HOVER: &str = "CW from the key or paddle plugged into the radio (always the default). Click to key from this computer instead.";
+const COMPUTER_KEY_HOVER: &str = "CW from this computer (touchpad, keyboard, typed text) is live. Click to go back to the radio's key.";
+
+/// The key switch on the Operate page: RADIO KEY (default) or COMPUTER KEY.
 pub fn arm_switch(app: &mut App, ui: &mut Ui) {
     let armed = app.services.cw().is_some();
     ui.horizontal(|ui| {
-        ui.label(RichText::new("CW ").strong());
+        ui.label(RichText::new("KEY").strong());
         let (text, fill, color) = if armed {
-            ("CW KEY ARMED", RED, Color32::WHITE)
+            ("COMPUTER KEY", RED, Color32::WHITE)
         } else {
-            ("CW KEY OFF", Color32::from_rgb(40, 20, 20), Color32::LIGHT_GRAY)
+            ("RADIO KEY", Color32::from_rgb(40, 34, 20), Color32::LIGHT_GRAY)
         };
         let button = egui::Button::new(RichText::new(text).strong().size(15.0).color(color)).min_size(egui::vec2(170.0, 30.0)).fill(fill);
-        let hover = if armed {
-            "Click to disarm: the key pad, keyboard paddles and text sending stop."
-        } else {
-            "Arm to key CW from this computer (touchpad, keyboard or typed text). Puts the radio in CW with break-in."
-        };
-        if ui.add(button).on_hover_text(hover).clicked() {
-            app.services.cw_arm(!armed);
-            app.cw_key.sent = (false, false);
+        if ui.add(button).on_hover_text(if armed { COMPUTER_KEY_HOVER } else { RADIO_KEY_HOVER }).clicked() {
+            set(app, !armed);
         }
         if let Some(why) = app.services.cw_disarmed.clone().filter(|_| !armed) {
-            ui.label(RichText::new(format!("disarmed: {why}")).color(AMBER));
+            ui.label(RichText::new(format!("back to radio key: {why}")).color(AMBER));
+        }
+    });
+}
+
+fn set(app: &mut App, computer: bool) {
+    app.services.cw_arm(computer);
+    app.cw_key.sent = (false, false);
+}
+
+/// The same switch in Settings, with the keyer options.
+pub fn settings_panel(app: &mut App, ui: &mut Ui) {
+    let armed = app.services.cw().is_some();
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new("CW key").strong().size(16.0).color(AMBER));
+        ui.horizontal(|ui| {
+            let choice = |text: &str, selected: bool, on: Color32| {
+                let color = if !selected { Color32::LIGHT_GRAY } else if on == AMBER { Color32::BLACK } else { Color32::WHITE };
+                egui::Button::new(RichText::new(text).size(16.0).strong().color(color))
+                    .fill(if selected { on } else { Color32::from_rgb(40, 34, 20) })
+                    .min_size(egui::vec2(240.0, 40.0))
+            };
+            if ui.add(choice("Radio's key / paddle", !armed, AMBER)).on_hover_text(RADIO_KEY_HOVER).clicked() && armed {
+                set(app, false);
+            }
+            if ui.add(choice("Computer key", armed, RED)).on_hover_text(COMPUTER_KEY_HOVER).clicked() && !armed {
+                set(app, true);
+            }
+        });
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.label("Computer key type");
+            let cfg = &mut app.services.config.cw;
+            for m in [KeyerMode::Straight, KeyerMode::IambicA, KeyerMode::IambicB] {
+                changed |= ui.selectable_value(&mut cfg.mode, m, m.label()).changed();
+            }
+            ui.separator();
+            changed |= ui.checkbox(&mut cfg.sidetone, "Sidetone on this computer").changed();
+        });
+        ui.label(
+            RichText::new(
+                "RigHelm always starts on the radio's key. The computer key uses the touchpad or mouse (left button = dit, right button = dah; \
+                 on a ThinkPad the buttons above the touchpad make good paddles), [ and ] on the keyboard, or typed text.",
+            )
+            .weak(),
+        );
+        if changed {
+            let _ = app.services.config.save();
+            if armed {
+                set(app, true);
+            }
         }
     });
 }
@@ -49,7 +97,7 @@ pub fn panel(app: &mut App, ui: &mut Ui) {
     egui::Frame::group(ui.style()).stroke(egui::Stroke::new(2.0, RED)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            ui.label(RichText::new("● CW KEY ARMED").strong().color(RED));
+            ui.label(RichText::new("● COMPUTER KEY").strong().color(RED));
             if !st.ready && st.error.is_none() {
                 ui.label(RichText::new("opening the keying line…").color(AMBER));
             }
@@ -89,14 +137,28 @@ pub fn panel(app: &mut App, ui: &mut Ui) {
         if straight {
             paddles = (paddles.0 || paddles.1, false);
         }
-        let fill = if st.down { RED } else if resp.hovered() { Color32::from_rgb(50, 30, 30) } else { Color32::from_rgb(30, 22, 22) };
-        ui.painter().rect_filled(rect, 8.0, fill);
-        let hint = if straight {
-            "KEY PAD — press and hold to key (touchpad, mouse, or hold [ )"
+        let idle = if resp.hovered() { Color32::from_rgb(50, 30, 30) } else { Color32::from_rgb(30, 22, 22) };
+        let lit = |on: bool| if on { RED } else { idle };
+        let text_color = |on: bool| if on { Color32::WHITE } else { DIM };
+        let big = egui::FontId::proportional(22.0);
+        let small = egui::FontId::proportional(13.0);
+        let p = ui.painter();
+        if straight {
+            p.rect_filled(rect, 8.0, lit(st.down));
+            p.text(rect.center() - egui::vec2(0.0, 12.0), egui::Align2::CENTER_CENTER, "KEY", big, text_color(st.down));
+            p.text(rect.center() + egui::vec2(0.0, 16.0), egui::Align2::CENTER_CENTER, "press and hold (touchpad, mouse or [ )", small, text_color(st.down));
         } else {
-            "KEY PAD — left button = dit · right button (two-finger press) = dah · keyboard [ = dit, ] = dah"
-        };
-        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, hint, egui::FontId::proportional(15.0), if st.down { Color32::WHITE } else { DIM });
+            // Two paddles: each half lights while its paddle is pressed.
+            let (left, right) = rect.split_left_right_at_fraction(0.5);
+            for (half, on, name, how) in [
+                (left.shrink2(egui::vec2(2.0, 0.0)), paddles.0, "DIT", "left button  ·  [ key"),
+                (right.shrink2(egui::vec2(2.0, 0.0)), paddles.1, "DAH", "right button / two-finger press  ·  ] key"),
+            ] {
+                p.rect_filled(half, 8.0, lit(on));
+                p.text(half.center() - egui::vec2(0.0, 12.0), egui::Align2::CENTER_CENTER, name, big.clone(), text_color(on));
+                p.text(half.center() + egui::vec2(0.0, 16.0), egui::Align2::CENTER_CENTER, how, small.clone(), text_color(on));
+            }
+        }
 
         ui.horizontal(|ui| {
             ui.label("Send text");

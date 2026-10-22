@@ -11,6 +11,8 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         tx_audio_panel(app, ui);
         ui.add_space(12.0);
+        crate::cw_key::settings_panel(app, ui);
+        ui.add_space(12.0);
         display(app, ui);
         ui.add_space(12.0);
         about(app, ui);
@@ -47,6 +49,13 @@ pub fn tx_audio_panel(app: &mut App, ui: &mut Ui) {
         });
         let on = app.services.config.tx_audio.computer_mic;
         mic_sel_line(app, ui, on);
+        if ui
+            .checkbox(&mut app.services.config.ui.space_ptt, "Hold the space bar to transmit (push-to-talk)")
+            .on_hover_text("Transmits while the space bar is held in RigHelm's window, except while typing in a text box or with the CW key armed")
+            .changed()
+        {
+            let _ = app.services.config.save();
+        }
         if on {
             mic_controls(app, ui, remote.is_some());
         }

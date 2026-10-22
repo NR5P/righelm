@@ -29,8 +29,9 @@ port and shares it with any number of other programs, on this computer or across
   microphone back.
 - **Computer microphone.** One click switches between the radio's own mic and this
   computer's (see below), here or on a remote radio.
-- **CW from the computer.** Key the radio from the touchpad, mouse or keyboard (straight key
-  or iambic paddles) or send typed text, behind an obvious ARM switch.
+- **CW from the computer.** A RADIO KEY / COMPUTER KEY switch: key the radio from the
+  touchpad, mouse or keyboard (straight key or iambic paddles) or send typed text.
+- **Space bar push-to-talk.** Hold the space bar to transmit, let go to stop.
 
 ## Build and install
 
@@ -148,8 +149,12 @@ voice comes from:
   is played into the radio's USB audio input while you transmit. Clicking back restores the
   menus.
 
+To talk, **hold the space bar** (push-to-talk) or click **MOX / PTT**. Space never keys while
+you are typing in a text box or with the computer CW key on, and it lets go if RigHelm's
+window loses focus. *Settings → Transmit audio* can turn it off.
+
 The computer mic only reaches the radio while you transmit in SSB, AM or FM, keyed by MOX
-in RigHelm, the radio's own PTT or footswitch, or a remote operator. It is never mixed into
+or the space bar in RigHelm, the radio's own PTT or footswitch, or a remote operator. It is never mixed into
 a transmission that WSJT-X or another program on a virtual port or rigctld keyed. *Settings
 → Transmit audio* picks the microphone and its gain and shows its level. "System default"
 never picks the radio's own audio input, even when PipeWire makes that the default.
@@ -160,20 +165,28 @@ transmit*.
 
 ## Sending CW from the computer
 
-Click **CW KEY OFF** on the Operate page to arm the key. The switch turns red, a red
-**CW KEY ARMED** badge appears at the top right, the radio goes to CW with break-in on,
-and a key pad opens:
+The **KEY** switch on the Operate page (also in *Settings → CW key*) chooses where CW
+comes from:
+
+- **RADIO KEY**: the key or paddle plugged into the radio. This is the default, and RigHelm
+  always starts with it.
+- **COMPUTER KEY**: this computer. The switch turns red, a red **COMPUTER KEY** badge appears
+  at the top right, the radio goes to CW with break-in on, and a key pad opens.
+
+Ways to key with the computer key:
 
 - **Key pad**: press and hold with the touchpad or mouse. Iambic modes: left button = dit,
-  right button (two-finger press on a touchpad) = dah. Straight key mode: hold = key down.
+  right button (two-finger press on a touchpad) = dah, and the DIT/DAH halves light up.
+  Holding both gives a squeeze. On a ThinkPad, the buttons above the touchpad make good
+  paddles. Straight key mode: hold = key down.
 - **Keyboard**: `[` = dit, `]` = dah (or the straight key).
 - **Send text**: type and press Enter. Touching the paddles, **Stop** or Esc stops it.
 - The speed is the radio's keyer speed (CW group → Speed). *Sidetone here* plays a tone on
   this computer, which helps on a remote radio.
 
 The radio is keyed on its Standard USB serial port's RTS line, with menu 065 PC KEYING
-set to RTS. The key is never armed when RigHelm starts. It disarms itself when the radio
-disconnects or leaves CW, and after 10 minutes unused. A key held down longer than 6
+set to RTS. RigHelm goes back to the radio's key by itself when the radio disconnects or
+leaves CW, and after 10 minutes unused. A key held down longer than 6
 seconds is released. On a remote radio, the timing is made on your computer and the
 server keys its own port. It lets go if your connection goes quiet.
 

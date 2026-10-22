@@ -350,7 +350,7 @@ fn meters_block(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
         let mox = egui::Button::new(RichText::new(if txing { "TX  (click to stop)" } else { "MOX / PTT" }).strong().size(16.0).color(if txing { Color32::WHITE } else { RED }))
             .min_size(egui::vec2(170.0, 36.0))
             .fill(if txing { RED } else { Color32::from_rgb(40, 20, 20) });
-        if ui.add(mox).on_hover_text("Transmits! Uses CAT TX (TX1;/TX0;)").clicked() {
+        if ui.add(mox).on_hover_text("Transmits! Uses CAT TX (TX1;/TX0;). Or hold the space bar to talk (Settings).").clicked() {
             rig.send(if txing { "TX0;" } else { "TX1;" });
         }
         let tuning = s.tuner == 2;

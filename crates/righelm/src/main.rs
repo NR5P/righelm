@@ -59,6 +59,8 @@ pub struct App {
     /// Self-test: render each tab to `<dir>/<tab>.ppm` and exit
     /// (`FTDX3000_SCREENSHOTS=dir`).
     screenshots: Option<(std::path::PathBuf, Instant, usize)>,
+    /// The space bar is holding the transmitter keyed (push-to-talk).
+    space_keyed: bool,
 }
 
 const SCREENSHOT_TABS: [(Tab, &str); 7] = [
@@ -112,6 +114,7 @@ impl App {
             logo,
             waterfall: Default::default(),
             screenshots: std::env::var_os("FTDX3000_SCREENSHOTS").map(|d| (d.into(), Instant::now(), 0)),
+            space_keyed: false,
         }
     }
 
@@ -148,6 +151,27 @@ impl App {
         ctx.request_repaint();
     }
 
+    /// Push-to-talk: hold the space bar to transmit, let go to stop. Not while
+    /// typing in a text field or with the CW key armed, and it lets go when
+    /// the window loses focus (the key-up would never arrive).
+    fn space_ptt(&mut self, ctx: &egui::Context) {
+        let enabled = self.services.config.ui.space_ptt && self.services.cw().is_none() && self.rig().link().is_open();
+        let typing = ctx.egui_wants_keyboard_input();
+        let (held, focused) = ctx.input(|i| (i.key_down(egui::Key::Space), i.focused));
+        let transmitting = self.rig().state().transmitting();
+        if let Some(key) = ptt_step(enabled, typing, held, focused, self.space_keyed, transmitting) {
+            self.rig().send(if key { "TX1;" } else { "TX0;" });
+            self.space_keyed = key;
+        }
+        // The space bar must not also press whatever button has focus.
+        if enabled && !typing {
+            ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space));
+        }
+        if self.space_keyed {
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
+    }
+
     pub fn rig(&self) -> &Rig {
         &self.services.rig
     }
@@ -174,8 +198,8 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if self.services.cw().is_some()
                     && ui
-                        .add(egui::Button::new(RichText::new("● CW KEY ARMED").strong().color(Color32::WHITE)).fill(RED))
-                        .on_hover_text("Click to disarm the CW key")
+                        .add(egui::Button::new(RichText::new("● COMPUTER KEY").strong().color(Color32::WHITE)).fill(RED))
+                        .on_hover_text("CW is keyed from this computer. Click to go back to the radio's key.")
                         .clicked()
                 {
                     self.services.cw_arm(false);
@@ -236,6 +260,8 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.services.tick();
+        let ctx = ui.ctx().clone();
+        self.space_ptt(&ctx);
         if self.last_detect.elapsed() > Duration::from_secs(3) {
             self.radios = detect::detect_radios();
             self.last_detect = Instant::now();
@@ -268,6 +294,18 @@ impl eframe::App for App {
     }
 }
 
+/// Push-to-talk decision: `Some(true)` = key, `Some(false)` = un-key.
+/// Starts only from a focused window with no text field being typed in, and
+/// never takes over a transmission started otherwise (MOX).
+fn ptt_step(enabled: bool, typing: bool, held: bool, focused: bool, keyed: bool, transmitting: bool) -> Option<bool> {
+    let want = enabled && held && focused && (!typing || keyed);
+    match (want, keyed) {
+        (true, false) if !transmitting => Some(true),
+        (false, true) => Some(false),
+        _ => None,
+    }
+}
+
 fn setup_style(ctx: &egui::Context) {
     ctx.set_visuals(egui::Visuals::dark());
     ctx.all_styles_mut(|style| {
@@ -289,4 +327,60 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native("RigHelm", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_to_talk_decisions() {
+        // enabled, typing, held, focused, keyed, transmitting
+        assert_eq!(ptt_step(true, false, true, true, false, false), Some(true), "press keys");
+        assert_eq!(ptt_step(true, false, true, true, true, true), None, "holding stays keyed");
+        assert_eq!(ptt_step(true, false, false, true, true, true), Some(false), "release un-keys");
+        assert_eq!(ptt_step(true, false, true, false, true, true), Some(false), "focus lost un-keys");
+        assert_eq!(ptt_step(false, false, true, true, true, true), Some(false), "switched off un-keys");
+        assert_eq!(ptt_step(true, true, true, true, false, false), None, "typing a space never keys");
+        assert_eq!(ptt_step(true, true, true, true, true, true), None, "a text field taking focus keeps the key held");
+        assert_eq!(ptt_step(true, false, true, true, false, true), None, "MOX already on: leave it");
+        assert_eq!(ptt_step(true, false, false, true, false, true), None, "releasing never un-keys MOX");
+        assert_eq!(ptt_step(false, false, true, true, false, false), None, "off");
+    }
+
+    fn space(pressed: bool) -> egui::RawInput {
+        let mut raw = egui::RawInput::default();
+        raw.events.push(egui::Event::Key { key: egui::Key::Space, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE });
+        raw
+    }
+
+    /// With egui's real input handling: the held state survives consuming
+    /// the key, and a focused button is not pressed by the space bar.
+    #[test]
+    fn space_is_held_and_does_not_click_buttons() {
+        let ctx = egui::Context::default();
+        let mut clicks = 0;
+        let mut frame = |raw: egui::RawInput, consume: bool, clicks: &mut i32| -> bool {
+            let mut held = false;
+            let _ = ctx.run_ui(raw, |ui| {
+                if consume {
+                    ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space));
+                }
+                held = ui.ctx().input(|i| i.key_down(egui::Key::Space));
+                let r = ui.button("MOX");
+                r.request_focus();
+                *clicks += r.clicked() as i32;
+            });
+            held
+        };
+        frame(egui::RawInput::default(), true, &mut clicks); // focus the button
+        assert!(frame(space(true), true, &mut clicks), "held after press");
+        assert!(frame(egui::RawInput::default(), true, &mut clicks), "still held");
+        assert!(!frame(space(false), true, &mut clicks), "released");
+        assert_eq!(clicks, 0, "space must not press the focused button");
+        // Control: without consuming, the space bar would press it.
+        frame(space(true), false, &mut clicks);
+        frame(space(false), false, &mut clicks);
+        assert!(clicks > 0, "control case should click");
+    }
 }
