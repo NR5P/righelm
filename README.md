@@ -57,8 +57,22 @@ Your user must be in the `dialout` group to open the radio's serial port.
 
 ### macOS
 
-RigHelm also builds on macOS (Apple Silicon and Intel). Audio uses CoreAudio there instead
+RigHelm also runs on macOS (Apple Silicon and Intel). Audio uses CoreAudio there instead
 of PipeWire.
+
+The easiest way is the download: open `righelm-vX.Y.Z-macos.dmg` from the
+[releases](https://github.com/NR5P/righelm/releases) and drag RigHelm into Applications.
+It's signed and notarized by Apple. The server and simulator are inside the app, for the
+command line:
+
+```bash
+/Applications/RigHelm.app/Contents/MacOS/righelmd --detect
+```
+
+To package it yourself, `packaging/macos/package.sh` builds the app and the .dmg (see the
+script for signing and notarizing).
+
+To build from source instead:
 
 1. Install the Xcode command-line tools and Rust:
 
@@ -84,11 +98,12 @@ Notes for the Mac:
 
 - **Microphone permission.** The first time RigHelm records audio (the radio's receive audio
   for the waterfall or remote server, or your microphone for remote transmit), macOS asks
-  to allow microphone access for the app you started it from (Terminal). Allow it, or audio
-  stays silent. You can change it later in System Settings → Privacy & Security →
+  to allow microphone access for RigHelm (or for Terminal, if you started it from there).
+  Allow it, or audio stays silent. You can change it later in System Settings → Privacy & Security →
   Microphone.
-- **Network permission.** For LAN remote, macOS may ask whether RigHelm may accept incoming
-  network connections. Allow it so it can find, and be found by, other copies of RigHelm.
+- **Network permission.** For LAN remote, macOS may ask whether RigHelm may find devices on
+  your local network and accept incoming connections. Allow both so it can find, and be
+  found by, other copies of RigHelm.
 - **Radio connected to the Mac.** The radio's ports appear as `/dev/cu.*` devices, using
   either macOS's built-in driver or Silicon Labs' CP210x driver, and are auto-detected. The
   radio's audio is found by name ("USB Audio CODEC").

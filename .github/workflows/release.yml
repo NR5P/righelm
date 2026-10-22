@@ -55,13 +55,42 @@ jobs:
           done
           echo "BIN=target/universal" >> "$GITHUB_ENV"
 
-      - name: Package
+      # A signed, notarized RigHelm.app in a .dmg. Without the secrets (a fork,
+      # say) the app is only ad-hoc signed and macOS will block it.
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+        run: |
+          if [ -n "$MACOS_CERT_P12" ]; then
+            kc="$RUNNER_TEMP/signing.keychain-db" kcpass=$(uuidgen)
+            echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+            security create-keychain -p "$kcpass" "$kc"
+            security set-keychain-settings -lut 21600 "$kc"
+            security unlock-keychain -p "$kcpass" "$kc"
+            security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple: -s -k "$kcpass" "$kc" >/dev/null
+            security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+            rm "$RUNNER_TEMP/cert.p12"
+            export SIGN_IDENTITY=$(security find-identity -v -p codesigning "$kc" | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)
+          fi
+          packaging/macos/package.sh "$BIN" "$TAG" .
+          asset="righelm-$TAG-macos.dmg"
+          shasum -a 256 "$asset" > "$asset.sha256"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
         run: |
           dir="righelm-$TAG-${{ matrix.name }}"
           mkdir -p "$dir/assets"
           cp "$BIN/righelm" "$BIN/righelmd" "$BIN/righelm-sim" README.md LICENSE "$dir/"
           cp assets/righelm-*.png assets/righelm.svg "$dir/assets/"
-          if [ "$RUNNER_OS" = Linux ]; then cp packaging/righelm.desktop "$dir/"; fi
+          cp packaging/righelm.desktop "$dir/"
           tar czf "$dir.tar.gz" "$dir"
           shasum -a 256 "$dir.tar.gz" > "$dir.tar.gz.sha256"
           echo "ASSET=$dir.tar.gz" >> "$GITHUB_ENV"
