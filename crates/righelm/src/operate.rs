@@ -40,6 +40,7 @@ fn mic_switch(app: &mut App, ui: &mut Ui) {
         let st = app.services.mic_status().unwrap_or_default();
         (st.sending, st.level_db, st.error)
     };
+    let refuses = app.services.remote_refuses_mic();
     ui.horizontal(|ui| {
         ui.label(RichText::new("MIC").strong());
         let text = if computer { "COMPUTER MIC" } else { "RADIO MIC" };
@@ -60,8 +61,11 @@ fn mic_switch(app: &mut App, ui: &mut Ui) {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(90.0, 12.0), egui::Sense::hover());
             ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(30, 32, 38));
             let fill = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * frac, rect.height()));
-            ui.painter().rect_filled(fill, 2.0, if frac > 0.9 { RED } else { GREEN });
-            if sending {
+            ui.painter().rect_filled(fill, 2.0, if refuses { AMBER } else if frac > 0.9 { RED } else { GREEN });
+            if refuses {
+                let text = if sending { "✖ NOT SENT: station refuses mic" } else { "⚠ station refuses mic" };
+                ui.label(RichText::new(text).color(AMBER).strong()).on_hover_text(crate::settings_tab::REFUSES_MIC);
+            } else if sending {
                 ui.label(RichText::new("● ON AIR").color(RED).strong());
             }
             if let Some(e) = error {

@@ -19,6 +19,9 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     });
 }
 
+pub const REFUSES_MIC: &str = "The remote radio's computer is not accepting microphone audio, so your voice is not transmitted. \
+     Turn on \"Accept microphone audio for transmit\" on that computer (Remote (LAN) tab).";
+
 /// One-click switch between the radio's own microphone and this computer's,
 /// with the computer mic's device, gain and level.
 pub fn tx_audio_panel(app: &mut App, ui: &mut Ui) {
@@ -110,6 +113,7 @@ fn mic_controls(app: &mut App, ui: &mut Ui, remote: bool) {
         let s = app.services.mic_status().unwrap_or_default();
         (s.level_db, s.sending, s.error, s.mic)
     };
+    let refuses = remote && app.services.remote_refuses_mic();
     let mut changed = false;
     let tx = &mut app.services.config.tx_audio;
     egui::Grid::new("txmic").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
@@ -127,9 +131,12 @@ fn mic_controls(app: &mut App, ui: &mut Ui, remote: bool) {
         ui.label("Level");
         ui.horizontal(|ui| {
             let frac = ((level + 60.0) / 60.0).clamp(0.0, 1.0);
-            widgets::Meter { label: "MIC", fraction: frac, text: format!("{level:.0} dB"), color: GREEN, ticks: &[], red_from: Some(0.9), peak: None }
+            let color = if refuses { AMBER } else { GREEN };
+            widgets::Meter { label: "MIC", fraction: frac, text: format!("{level:.0} dB"), color, ticks: &[], red_from: Some(0.9), peak: None }
                 .show(ui, 260.0);
-            if sending {
+            if sending && refuses {
+                ui.label(RichText::new("✖ NOT SENT").color(AMBER).strong());
+            } else if sending {
                 ui.label(RichText::new("● ON AIR").color(RED).strong());
             }
         });
@@ -138,15 +145,10 @@ fn mic_controls(app: &mut App, ui: &mut Ui, remote: bool) {
     if let Some(e) = error {
         ui.label(RichText::new(e).color(AMBER));
     }
-    if remote {
-        let target = app.services.config.engine.remote.as_ref().map(|t| t.addr.clone()).unwrap_or_default();
-        let refuses = app.services.discovery.as_ref().is_some_and(|d| d.servers().iter().any(|f| f.addr.to_string() == target && !f.mic));
-        if refuses {
-            ui.label(
-                RichText::new("The remote radio's computer does not accept microphone audio: turn on \"Accept microphone audio for transmit\" there (Remote (LAN)).")
-                    .color(AMBER),
-            );
-        }
+    if refuses {
+        ui.label(
+            RichText::new(format!("⚠ {REFUSES_MIC}")).color(AMBER).strong(),
+        );
     }
     if changed {
         app.services.apply_tx_audio();

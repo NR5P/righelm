@@ -312,6 +312,13 @@ impl Services {
         self.audio_client.as_ref().map(|a| a.status())
     }
 
+    /// The remote radio's computer announces that it won't play our
+    /// microphone into the radio (its "Accept microphone audio" is off).
+    pub fn remote_refuses_mic(&self) -> bool {
+        let Some(target) = &self.config.engine.remote else { return false };
+        self.discovery.as_ref().is_some_and(|d| d.servers().iter().any(|f| f.addr.to_string() == target.addr && !f.mic))
+    }
+
     /// Record the local radio's audio (idle until something subscribes to
     /// `rx_tap`), unless we're controlling a remote radio.
     fn apply_local_rx(&mut self) {
