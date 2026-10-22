@@ -1,0 +1,74 @@
+# Builds the Linux and macOS downloads and attaches them to a GitHub release.
+# Push a tag to run it:
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Releases are marked as pre-releases while RigHelm is still in testing.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            name: linux-x86_64
+          - os: macos-14
+            name: macos-universal
+    runs-on: ${{ matrix.os }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --release --locked
+          echo "BIN=target/release" >> "$GITHUB_ENV"
+
+      # One download for Apple Silicon and Intel Macs.
+      - name: Build (macOS, universal)
+        if: runner.os == 'macOS'
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          mkdir -p target/universal
+          for b in righelm righelmd righelm-sim; do
+            lipo -create -output "target/universal/$b" \
+              "target/aarch64-apple-darwin/release/$b" "target/x86_64-apple-darwin/release/$b"
+          done
+          echo "BIN=target/universal" >> "$GITHUB_ENV"
+
+      - name: Package
+        run: |
+          dir="righelm-$TAG-${{ matrix.name }}"
+          mkdir -p "$dir/assets"
+          cp "$BIN/righelm" "$BIN/righelmd" "$BIN/righelm-sim" README.md "$dir/"
+          cp assets/righelm-*.png assets/righelm.svg "$dir/assets/"
+          if [ "$RUNNER_OS" = Linux ]; then cp packaging/righelm.desktop "$dir/"; fi
+          tar czf "$dir.tar.gz" "$dir"
+          shasum -a 256 "$dir.tar.gz" > "$dir.tar.gz.sha256"
+          echo "ASSET=$dir.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Upload to the release
+        run: |
+          gh release create "$TAG" --prerelease --title "RigHelm $TAG (testing)" \
+            --notes "Test build. RigHelm is still being tested; please report problems as issues." \
+            2>/dev/null || true
+          gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
