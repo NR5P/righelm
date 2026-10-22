@@ -7,10 +7,12 @@ license.workspace = true
 
 [dependencies]
 crossbeam-channel = "0.5.17"
+ctrlc = { version = "3.5.2", features = ["termination"] }
 ftdx3000-cat.workspace = true
+gethostname = "1.1.0"
 hmac = "0.13.0"
+if-addrs = "0.15.0"
 log.workspace = true
-nix = { version = "0.31.3", features = ["term", "fs", "poll", "signal", "ioctl", "net", "hostname"] }
 parking_lot = "0.13.0"
 rustfft = "6.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -25,3 +27,5 @@ version = "0.11.11"
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 cpal = "0.18.2"
 
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", features = ["term", "fs", "poll", "signal", "ioctl", "net", "hostname"] }

@@ -137,12 +137,10 @@ fn mac(password: &str, nonce: &str, mode: &str) -> Hmac<Sha256> {
 /// This machine's non-loopback IPv4 addresses.
 pub fn local_addresses() -> Vec<String> {
     let mut out = Vec::new();
-    if let Ok(ifs) = nix::ifaddrs::getifaddrs() {
-        for i in ifs {
-            if let Some(ip) = i.address.as_ref().and_then(|a| a.as_sockaddr_in().map(|s| s.ip())) {
-                if !ip.is_loopback() && !out.contains(&ip.to_string()) {
-                    out.push(ip.to_string());
-                }
+    for i in if_addrs::get_if_addrs().unwrap_or_default() {
+        if let if_addrs::IfAddr::V4(v4) = &i.addr {
+            if !v4.ip.is_loopback() && !out.contains(&v4.ip.to_string()) {
+                out.push(v4.ip.to_string());
             }
         }
     }
@@ -150,7 +148,7 @@ pub fn local_addresses() -> Vec<String> {
 }
 
 pub fn hostname() -> String {
-    nix::unistd::gethostname().ok().and_then(|h| h.into_string().ok()).unwrap_or_else(|| "ftdx3000".into())
+    gethostname::gethostname().into_string().ok().filter(|h| !h.is_empty()).unwrap_or_else(|| "ftdx3000".into())
 }
 
 // ---------------------------------------------------------------- discovery
@@ -204,9 +202,9 @@ fn parse_beacon(text: &str, from: SocketAddr) -> Option<Found> {
 /// Broadcast addresses of all IPv4 interfaces, plus the limited broadcast.
 fn broadcast_targets() -> Vec<SocketAddr> {
     let mut out = vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::BROADCAST), DISCOVERY_PORT)];
-    if let Ok(ifs) = nix::ifaddrs::getifaddrs() {
-        for i in ifs {
-            if let Some(b) = i.broadcast.as_ref().and_then(|b| b.as_sockaddr_in().map(|s| s.ip())) {
+    for i in if_addrs::get_if_addrs().unwrap_or_default() {
+        if let if_addrs::IfAddr::V4(v4) = &i.addr {
+            if let Some(b) = v4.broadcast.filter(|_| !v4.ip.is_loopback()) {
                 let a = SocketAddr::new(IpAddr::V4(b), DISCOVERY_PORT);
                 if !out.contains(&a) {
                     out.push(a);
@@ -221,6 +219,8 @@ fn discovery_socket(port: u16) -> io::Result<UdpSocket> {
     use socket2::{Domain, Protocol, Socket, Type};
     let s = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     s.set_reuse_address(true)?;
+    // Lets two copies on one machine (and avahi etc.) share the port.
+    #[cfg(unix)]
     s.set_reuse_port(true)?;
     s.set_broadcast(true)?;
     s.bind(&SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port).into())?;
@@ -642,7 +642,7 @@ fn serve_cat(rig: &Rig, cfg: &RemoteServerConfig, stream: TcpStream, mut reader:
     let connected = Arc::new(AtomicBool::new(true));
     let session_stop = Arc::new(AtomicBool::new(false));
     let _pusher = vport::ai_pusher(rig.clone(), writer.clone(), client.clone(), connected.clone(), session_stop.clone(), || {})?;
-    let vcfg = VirtualPortConfig { name: who.into(), label: who.into(), enabled: true, block_tx: !tx_allowed(cfg) };
+    let vcfg = VirtualPortConfig { name: who.into(), label: who.into(), enabled: true, block_tx: !tx_allowed(cfg), com_port: String::new() };
     let source = Source::Client(who.into());
     let mut framer = Framer::new();
     let mut buf = [0u8; 1024];

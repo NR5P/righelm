@@ -3,7 +3,8 @@
 ![RigHelm](assets/righelm-128.png)
 
 **RigHelm** — the Linux alternative to Win4Yaesu for the Yaesu FTDX3000. Rig control,
-sharing and LAN remote, written in Rust.
+sharing and LAN remote, written in Rust. Runs on Linux, macOS and Windows: as the station
+the radio is plugged into, or as a remote control for another RigHelm on your network.
 
 It owns the radio's CAT
 port and shares it with any number of other programs, on this computer or across your LAN.
@@ -90,6 +91,36 @@ Notes for the Mac:
   `/tmp/ftdx3000-jane/vcom1`).
 - **Controlling a radio on your Linux machine** needs no serial port on the Mac at all.
   Open Remote (LAN) and connect.
+
+### Windows
+
+1. Install [Rust](https://rustup.rs) (it also installs the Visual Studio C++ build tools
+   it needs).
+2. Install the radio's USB driver: the Silicon Labs CP210x driver from Yaesu's or Silicon
+   Labs' site. The radio then shows up as two COM ports.
+3. Build and run from the repository:
+
+   ```bash
+   cargo build --release
+   ```
+
+   ```bash
+   target\release\righelm.exe
+   ```
+
+Notes for Windows:
+
+- **Virtual ports need [com0com](https://com0com.sourceforge.net/)**, the same free virtual
+  null-modem driver Win4Yaesu uses. Create a pair (for example COM10 ⇄ COM11). In Ports &
+  sharing, enter COM10 for a virtual port, then point WSJT-X or your logger at COM11.
+- On Windows a virtual port can't tell when the program on the other end closes, so the
+  automatic un-key when a client disappears covers rigctld and remote clients but not
+  com0com ports. Where a program supports it, prefer **Hamlib NET rigctl** (127.0.0.1:4532),
+  which has no such gap and needs no com0com.
+- Audio uses Windows' own audio system; the radio's sound card is found by name
+  ("USB Audio CODEC").
+- Allow RigHelm through Windows Firewall when asked if you use LAN remote.
+- `righelm-sim` (the simulator) needs a Unix pseudo-terminal and is Linux/macOS only.
 
 ## Radio settings
 

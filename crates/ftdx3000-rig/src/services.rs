@@ -142,7 +142,7 @@ impl Config {
     }
 
     pub fn link_dir(&self) -> PathBuf {
-        self.link_dir.clone().unwrap_or_else(crate::pty::default_link_dir)
+        self.link_dir.clone().unwrap_or_else(default_link_dir)
     }
 
     /// Fill in the CAT port from auto-detection if none is configured or
@@ -155,6 +155,17 @@ impl Config {
             self.engine.serial.path = first.cat.stable_path().to_string();
         }
         Some(first)
+    }
+}
+
+/// Default directory for the stable virtual-port links (Unix).
+pub fn default_link_dir() -> PathBuf {
+    match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(d) => PathBuf::from(d).join("ftdx3000"),
+        // macOS has no XDG runtime dir and its temp dir is a long random
+        // path; keep the names short enough to type into WSJT-X.
+        None if cfg!(unix) => PathBuf::from(format!("/tmp/ftdx3000-{}", std::env::var("USER").unwrap_or_else(|_| "user".into()))),
+        None => std::env::temp_dir().join("ftdx3000"),
     }
 }
 

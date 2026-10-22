@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, ComboBox, RichText, Ui};
 use ftdx3000_rig::detect::{self, SerialPortEntry};
+#[cfg(unix)]
 use ftdx3000_rig::pty;
 use ftdx3000_rig::transport::{BAUD_RATES, FlowControl};
 use ftdx3000_rig::vport::VirtualPortConfig;
@@ -13,6 +14,7 @@ use ftdx3000_rig::{Config, EngineConfig};
 use crate::App;
 use crate::widgets::{AMBER, CYAN, DIM, GREEN, RED};
 
+#[cfg_attr(not(unix), allow(dead_code))] // the Wine fields are Unix-only
 pub struct SharingState {
     engine: EngineConfig,
     ports: Vec<VirtualPortConfig>,
@@ -60,7 +62,10 @@ fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
 pub fn show(app: &mut App, ui: &mut Ui) {
     if !app.sharing.scanned {
         app.sharing.serial_ports = detect::list_serial_ports();
-        app.sharing.wine_prefixes = pty::find_wine_prefixes();
+        #[cfg(unix)]
+        {
+            app.sharing.wine_prefixes = pty::find_wine_prefixes();
+        }
         app.sharing.scanned = true;
     }
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -68,6 +73,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         cat_section(app, ui);
         vport_section(app, ui);
         rigctld_section(app, ui);
+        #[cfg(unix)]
         wine_section(app, ui);
     });
 }
@@ -151,7 +157,7 @@ fn cat_section(app: &mut App, ui: &mut Ui) {
                             st.engine.serial.path = path;
                         }
                     }
-                    let sim = pty::default_link_dir().join("sim").to_string_lossy().to_string();
+                    let sim = ftdx3000_rig::services::default_link_dir().join("sim").to_string_lossy().to_string();
                     if ui.selectable_label(st.engine.serial.path == sim, format!("{sim}  — simulator (run righelm-sim)")).clicked() {
                         st.engine.serial.path = sim;
                     }
@@ -230,7 +236,8 @@ fn vport_section(app: &mut App, ui: &mut Ui) {
         let st = &mut app.sharing;
         let mut remove = None;
         egui::Grid::new("vports").num_columns(7).striped(true).spacing([10.0, 6.0]).show(ui, |ui| {
-            for h in ["On", "Name", "Used by", "Path (use this in the other program)", "Status", "Block TX", ""] {
+            let path_header = if cfg!(windows) { "com0com port RigHelm opens (programs use its partner)" } else { "Path (use this in the other program)" };
+            for h in ["On", "Name", "Used by", path_header, "Status", "Block TX", ""] {
                 ui.label(RichText::new(h).strong());
             }
             ui.end_row();
@@ -238,10 +245,15 @@ fn vport_section(app: &mut App, ui: &mut Ui) {
                 ui.checkbox(&mut p.enabled, "");
                 ui.add_sized([70.0, 22.0], egui::TextEdit::singleline(&mut p.name));
                 ui.add_sized([110.0, 22.0], egui::TextEdit::singleline(&mut p.label));
-                let path = dir.join(&p.name).to_string_lossy().to_string();
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(&path).monospace());
-                    copy_button(ui, &path);
+                    if cfg!(windows) {
+                        ui.add_sized([90.0, 22.0], egui::TextEdit::singleline(&mut p.com_port).hint_text("COM10"));
+                        ui.label(RichText::new("needs com0com").weak());
+                    } else {
+                        let path = dir.join(&p.name).to_string_lossy().to_string();
+                        ui.label(RichText::new(&path).monospace());
+                        copy_button(ui, &path);
+                    }
                 });
                 match status.iter().find(|(c, _)| c.name == p.name) {
                     Some((_, Ok(s))) => {
@@ -321,6 +333,7 @@ fn rigctld_section(app: &mut App, ui: &mut Ui) {
     });
 }
 
+#[cfg(unix)]
 fn wine_section(app: &mut App, ui: &mut Ui) {
     let dir = app.services.config.link_dir();
     section(ui, "Wine COM port mapping", |ui| {

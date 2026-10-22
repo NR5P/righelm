@@ -24,7 +24,10 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{CatError, Freshness, Rig, Source};
-use crate::pty::{Pty, PtyEvent, PtyWriter};
+#[cfg(windows)]
+use crate::comport::{ComEnd as End, PtyEvent};
+#[cfg(unix)]
+use crate::pty::{Pty as End, PtyEvent};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -36,11 +39,13 @@ pub struct VirtualPortConfig {
     pub enabled: bool,
     /// Ignore TX/MOX commands from this client.
     pub block_tx: bool,
+    /// Windows only: the com0com port RigHelm opens (programs use its partner).
+    pub com_port: String,
 }
 
 impl Default for VirtualPortConfig {
     fn default() -> Self {
-        Self { name: "vcom1".into(), label: String::new(), enabled: true, block_tx: false }
+        Self { name: "vcom1".into(), label: String::new(), enabled: true, block_tx: false, com_port: String::new() }
     }
 }
 
@@ -67,8 +72,16 @@ pub struct VirtualPort {
 
 impl VirtualPort {
     pub fn start(rig: Rig, config: VirtualPortConfig, link_dir: PathBuf) -> std::io::Result<VirtualPort> {
-        let link_path = link_dir.join(&config.name);
-        let pty = Pty::open(Some(&link_path))?;
+        #[cfg(unix)]
+        let (pty, link_path) = {
+            let link = link_dir.join(&config.name);
+            (End::open(Some(&link))?, link)
+        };
+        #[cfg(windows)]
+        let (pty, link_path) = {
+            let _ = &link_dir;
+            (End::open(&config.com_port)?, PathBuf::from(config.com_port.trim()))
+        };
         let status = Arc::new(Mutex::new(VirtualPortStatus {
             link_path: link_path.clone(),
             slave_path: pty.slave_path.clone(),
@@ -76,7 +89,7 @@ impl VirtualPort {
         }));
         rig.note(format!("virtual port {} -> {}", link_path.display(), pty.slave_path.display()));
         let stop = Arc::new(AtomicBool::new(false));
-        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(PtyWriter(pty.master.try_clone()?))));
+        let writer: SharedWriter = Arc::new(Mutex::new(pty.writer()?));
         let client = Arc::new(ClientCtx::default());
         let connected = Arc::new(AtomicBool::new(false));
 
@@ -165,7 +178,7 @@ pub(crate) fn ai_pusher(
 fn serve(
     rig: Rig,
     config: VirtualPortConfig,
-    mut pty: Pty,
+    mut pty: End,
     writer: SharedWriter,
     client: Arc<ClientCtx>,
     connected: Arc<AtomicBool>,
@@ -183,7 +196,7 @@ fn serve(
     // The slave was closed. If someone had it open, clean up after them and
     // give the next program a fresh PTY (clears any exclusive-mode lock,
     // even from a program that opened the port and never wrote to it).
-    let hangup = |pty: &mut Pty, framer: &mut Framer| {
+    let hangup = |pty: &mut End, framer: &mut Framer| {
         if !connected.swap(false, Ordering::Relaxed) {
             thread::sleep(Duration::from_millis(100));
             return;
@@ -201,9 +214,9 @@ fn serve(
             mark_open();
             return;
         }
-        match pty.renew().and_then(|_| pty.master.try_clone()) {
+        match pty.renew().and_then(|_| pty.writer()) {
             Ok(w) => {
-                *writer.lock() = Box::new(PtyWriter(w));
+                *writer.lock() = w;
                 status.lock().slave_path = pty.slave_path.clone();
             }
             Err(e) => status.lock().error = Some(format!("renewing port: {e}")),
@@ -296,7 +309,7 @@ pub(crate) fn handle(rig: &Rig, config: &VirtualPortConfig, source: &Source, cli
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::Read;

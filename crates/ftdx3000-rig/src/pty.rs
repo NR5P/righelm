@@ -170,6 +170,11 @@ impl Pty {
         }
     }
 
+    /// A handle for answers and auto-information.
+    pub fn writer(&self) -> io::Result<Box<dyn io::Write + Send>> {
+        Ok(Box::new(PtyWriter(self.master.try_clone()?)))
+    }
+
     /// Read what the program on the other side sent.
     pub fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if !self.ahead.is_empty() {
@@ -217,15 +222,8 @@ pub fn replace_symlink(link: &Path, target: &Path) -> io::Result<()> {
     fs::rename(&tmp, link)
 }
 
-/// Default directory for the stable port links.
-pub fn default_link_dir() -> PathBuf {
-    match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(d) => PathBuf::from(d).join("ftdx3000"),
-        // macOS has no XDG runtime dir and its temp dir is a long random
-        // path; keep the names short enough to type into WSJT-X.
-        None => PathBuf::from(format!("/tmp/ftdx3000-{}", std::env::var("USER").unwrap_or_else(|_| "user".into()))),
-    }
-}
+pub use crate::services::default_link_dir;
+
 
 /// Wine prefixes found on this machine (directories containing `dosdevices`).
 pub fn find_wine_prefixes() -> Vec<PathBuf> {

@@ -3,6 +3,19 @@
 //!
 //!     righelm-sim [LINK_PATH]     (default: $XDG_RUNTIME_DIR/ftdx3000/sim)
 
+#[cfg(not(unix))]
+fn main() {
+    eprintln!("righelm-sim needs a Unix pseudo-terminal (Linux or macOS).");
+    std::process::exit(1);
+}
+
+#[cfg(unix)]
+fn main() -> std::io::Result<()> {
+    unix::main()
+}
+
+#[cfg(unix)]
+mod unix {
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -13,11 +26,7 @@ use ftdx3000_rig::sim::SimCore;
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
-extern "C" fn on_signal(_: nix::libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
-
-fn main() -> std::io::Result<()> {
+pub fn main() -> std::io::Result<()> {
     let link = std::env::args().nth(1).map(Into::into).unwrap_or_else(|| default_link_dir().join("sim"));
     install_signal_handlers();
     let mut pty = Pty::open(Some(&link))?;
@@ -62,12 +71,6 @@ fn main() -> std::io::Result<()> {
 }
 
 fn install_signal_handlers() {
-    use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
-    let action = SigAction::new(SigHandler::Handler(on_signal), SaFlags::empty(), SigSet::empty());
-    for sig in [Signal::SIGINT, Signal::SIGTERM, Signal::SIGHUP] {
-        // SAFETY: the handler only stores to an atomic.
-        unsafe {
-            let _ = sigaction(sig, &action);
-        }
-    }
+    let _ = ctrlc::set_handler(|| STOP.store(true, Ordering::Relaxed));
+}
 }

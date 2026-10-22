@@ -12,19 +12,9 @@ use ftdx3000_rig::{Config, LinkState, Services, detect};
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
-extern "C" fn on_signal(_: nix::libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
-
 fn install_signal_handlers() {
-    use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
-    let action = SigAction::new(SigHandler::Handler(on_signal), SaFlags::empty(), SigSet::empty());
-    for sig in [Signal::SIGINT, Signal::SIGTERM, Signal::SIGHUP] {
-        // SAFETY: the handler only stores to an atomic.
-        unsafe {
-            let _ = sigaction(sig, &action);
-        }
-    }
+    // Ctrl-C, SIGTERM and SIGHUP (or the Windows equivalents): shut down cleanly.
+    let _ = ctrlc::set_handler(|| STOP.store(true, Ordering::Relaxed));
 }
 
 fn main() {
