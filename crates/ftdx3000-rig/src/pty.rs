@@ -6,12 +6,13 @@
 //! exactly as if it were the radio's serial port.
 
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Read};
 use std::os::fd::AsFd;
 use std::os::unix::fs::{FileTypeExt, symlink};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::pty::openpty;
 use nix::sys::termios::{SetArg, cfmakeraw, tcgetattr, tcsetattr};
@@ -22,6 +23,33 @@ pub struct Pty {
     pub slave_path: PathBuf,
     /// Stable symlink pointing at `slave_path`, if requested.
     pub link_path: Option<PathBuf>,
+    /// Bytes read ahead by `wait` (macOS), returned first by `read`.
+    ahead: Vec<u8>,
+}
+
+/// Wait until `fd` can be read (or written). macOS's poll() doesn't work on
+/// terminal devices, so it uses select() there.
+fn ready(fd: std::os::fd::BorrowedFd<'_>, write: bool, timeout: Duration) -> io::Result<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut fds = [PollFd::new(fd, if write { PollFlags::POLLOUT } else { PollFlags::POLLIN })];
+        let ms = timeout.as_millis().min(u16::MAX as u128) as u16;
+        Ok(poll(&mut fds, PollTimeout::from(ms)).map_err(io::Error::from)? > 0)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        use nix::sys::select::{FdSet, select};
+        use nix::sys::time::TimeVal;
+        let mut set = FdSet::new();
+        set.insert(fd);
+        let mut tv = TimeVal::new(timeout.as_secs() as _, timeout.subsec_micros() as _);
+        let n = if write {
+            select(None, None, Some(&mut set), None, Some(&mut tv))
+        } else {
+            select(None, Some(&mut set), None, None, Some(&mut tv))
+        };
+        Ok(n.map_err(io::Error::from)? > 0)
+    }
 }
 
 /// Writes to a non-blocking PTY master, waiting at most a moment for room.
@@ -34,8 +62,7 @@ impl io::Write for PtyWriter {
         loop {
             match self.0.write(buf) {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    let mut fds = [PollFd::new(self.0.as_fd(), PollFlags::POLLOUT)];
-                    if poll(&mut fds, PollTimeout::from(200u16)).map_err(io::Error::from)? == 0 {
+                    if !ready(self.0.as_fd(), true, Duration::from_millis(200))? {
                         return Err(io::Error::new(io::ErrorKind::TimedOut, "client is not reading"));
                     }
                 }
@@ -80,7 +107,7 @@ impl Pty {
             }
             None => None,
         };
-        Ok(Pty { master: File::from(pair.master), slave_path, link_path })
+        Ok(Pty { master: File::from(pair.master), slave_path, link_path, ahead: Vec::new() })
     }
 
     /// Replace the PTY pair with a fresh one behind the same link.
@@ -97,25 +124,61 @@ impl Pty {
         // `fresh` has no link, so dropping it later removes nothing.
         self.master = fresh.master.try_clone()?;
         self.slave_path = fresh.slave_path.clone();
+        self.ahead.clear();
         Ok(())
     }
 
     /// Wait for input from the program on the other side.
-    pub fn wait(&self, timeout: Duration) -> io::Result<PtyEvent> {
-        let mut fds = [PollFd::new(self.master.as_fd(), PollFlags::POLLIN)];
-        let ms = timeout.as_millis().min(u16::MAX as u128) as u16;
-        let n = poll(&mut fds, PollTimeout::from(ms)).map_err(io::Error::from)?;
-        if n == 0 {
-            return Ok(PtyEvent::Timeout);
+    pub fn wait(&mut self, timeout: Duration) -> io::Result<PtyEvent> {
+        if !self.ahead.is_empty() {
+            return Ok(PtyEvent::Readable);
         }
-        let ev = fds[0].revents().unwrap_or(PollFlags::empty());
-        if ev.contains(PollFlags::POLLIN) {
-            Ok(PtyEvent::Readable)
-        } else if ev.intersects(PollFlags::POLLHUP | PollFlags::POLLERR) {
-            Ok(PtyEvent::Hangup)
-        } else {
-            Ok(PtyEvent::Timeout)
+        #[cfg(target_os = "linux")]
+        {
+            let mut fds = [PollFd::new(self.master.as_fd(), PollFlags::POLLIN)];
+            let ms = timeout.as_millis().min(u16::MAX as u128) as u16;
+            let n = poll(&mut fds, PollTimeout::from(ms)).map_err(io::Error::from)?;
+            if n == 0 {
+                return Ok(PtyEvent::Timeout);
+            }
+            let ev = fds[0].revents().unwrap_or(PollFlags::empty());
+            if ev.contains(PollFlags::POLLIN) {
+                Ok(PtyEvent::Readable)
+            } else if ev.intersects(PollFlags::POLLHUP | PollFlags::POLLERR) {
+                Ok(PtyEvent::Hangup)
+            } else {
+                Ok(PtyEvent::Timeout)
+            }
         }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // select() reports a closed slave as readable; a read tells
+            // data (keep it for `read`) from hang-up (0 bytes or EIO).
+            if !ready(self.master.as_fd(), false, timeout)? {
+                return Ok(PtyEvent::Timeout);
+            }
+            let mut buf = [0u8; 512];
+            match self.master.read(&mut buf) {
+                Ok(0) => Ok(PtyEvent::Hangup),
+                Ok(n) => {
+                    self.ahead.extend_from_slice(&buf[..n]);
+                    Ok(PtyEvent::Readable)
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(PtyEvent::Timeout),
+                Err(_) => Ok(PtyEvent::Hangup),
+            }
+        }
+    }
+
+    /// Read what the program on the other side sent.
+    pub fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if !self.ahead.is_empty() {
+            let n = buf.len().min(self.ahead.len());
+            buf[..n].copy_from_slice(&self.ahead[..n]);
+            self.ahead.drain(..n);
+            return Ok(n);
+        }
+        self.master.read(buf)
     }
 }
 
@@ -156,10 +219,12 @@ pub fn replace_symlink(link: &Path, target: &Path) -> io::Result<()> {
 
 /// Default directory for the stable port links.
 pub fn default_link_dir() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir())
-        .join("ftdx3000")
+    match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(d) => PathBuf::from(d).join("ftdx3000"),
+        // macOS has no XDG runtime dir and its temp dir is a long random
+        // path; keep the names short enough to type into WSJT-X.
+        None => PathBuf::from(format!("/tmp/ftdx3000-{}", std::env::var("USER").unwrap_or_else(|_| "user".into()))),
+    }
 }
 
 /// Wine prefixes found on this machine (directories containing `dosdevices`).
@@ -234,7 +299,7 @@ mod tests {
         client.write_all(b"FA;").unwrap();
         assert_eq!(pty.wait(Duration::from_secs(1)).unwrap(), PtyEvent::Readable);
         let mut buf = [0u8; 16];
-        let n = pty.master.read(&mut buf).unwrap();
+        let n = pty.read(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"FA;");
         pty.master.write_all(b"FA14074000;").unwrap();
         let n = client.read(&mut buf).unwrap();

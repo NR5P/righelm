@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, ComboBox, RichText, Slider, Ui};
 use ftdx3000_rig::audio::AudioDevice;
-use ftdx3000_rig::detect::{self, AudioNode};
+use ftdx3000_rig::audio::DeviceEntry;
 use ftdx3000_rig::remote::{DEFAULT_PORT, RemoteTarget, local_addresses};
 
 use crate::App;
@@ -15,7 +15,7 @@ pub struct RemoteState {
     addr: String,
     password: String,
     show_password: bool,
-    nodes: Vec<AudioNode>,
+    nodes: Vec<DeviceEntry>,
     nodes_at: Option<Instant>,
 }
 
@@ -35,17 +35,16 @@ fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
     ui.add_space(8.0);
 }
 
-fn device_combo(ui: &mut Ui, id: &str, dev: &mut AudioDevice, nodes: &[AudioNode], class: &str) -> bool {
-    let label = match dev {
+fn device_combo(ui: &mut Ui, id: &str, dev: &mut AudioDevice, nodes: &[DeviceEntry], input: bool) -> bool {
+    let label = match &*dev {
         AudioDevice::Default => "System default".to_string(),
-        AudioDevice::PipeWire(n) => nodes.iter().find(|x| &x.name == n).map(|x| x.description.clone()).unwrap_or(n.clone()),
-        AudioDevice::Alsa(n) => format!("ALSA {n}"),
+        other => nodes.iter().find(|x| x.device == *other).map(|x| x.label.clone()).unwrap_or_else(|| other.to_string()),
     };
     let mut changed = false;
     ComboBox::from_id_salt(id).width(320.0).selected_text(label).show_ui(ui, |ui| {
         changed |= ui.selectable_value(dev, AudioDevice::Default, "System default").changed();
-        for n in nodes.iter().filter(|n| n.class == class) {
-            changed |= ui.selectable_value(dev, AudioDevice::PipeWire(n.name.clone()), &n.description).changed();
+        for n in nodes.iter().filter(|n| n.input == input) {
+            changed |= ui.selectable_value(dev, n.device.clone(), &n.label).changed();
         }
     });
     changed
@@ -53,7 +52,7 @@ fn device_combo(ui: &mut Ui, id: &str, dev: &mut AudioDevice, nodes: &[AudioNode
 
 pub fn show(app: &mut App, ui: &mut Ui) {
     if app.remote.nodes_at.is_none_or(|t| t.elapsed() > Duration::from_secs(10)) {
-        app.remote.nodes = detect::list_audio_nodes();
+        app.remote.nodes = ftdx3000_rig::audio::list_devices();
         app.remote.nodes_at = Some(Instant::now());
         if app.remote.password.is_empty() {
             if let Some(t) = &app.services.config.last_remote {
@@ -155,7 +154,7 @@ fn audio_controls(app: &mut App, ui: &mut Ui) {
         changed |= ui.add(Slider::new(&mut cfg.volume, 0.0..=4.0).step_by(0.05)).changed();
         ui.end_row();
         ui.label("Speaker");
-        changed |= device_combo(ui, "speaker", &mut cfg.speaker, &nodes, "Audio/Sink");
+        changed |= device_combo(ui, "speaker", &mut cfg.speaker, &nodes, false);
         ui.end_row();
         ui.label("Microphone");
         ui.horizontal(|ui| {
@@ -166,7 +165,7 @@ fn audio_controls(app: &mut App, ui: &mut Ui) {
         });
         ui.end_row();
         ui.label("");
-        changed |= device_combo(ui, "mic", &mut cfg.mic, &nodes, "Audio/Source");
+        changed |= device_combo(ui, "mic", &mut cfg.mic, &nodes, true);
         ui.end_row();
         ui.label("Mic gain");
         changed |= ui.add(Slider::new(&mut cfg.mic_gain, 0.0..=4.0).step_by(0.05)).changed();

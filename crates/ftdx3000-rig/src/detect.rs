@@ -10,6 +10,9 @@
 //! Detection only reads sysfs/procfs. Ports are never opened here: opening a
 //! tty raises RTS/DTR, and on the Standard port that can key the transmitter.
 
+// The sysfs/procfs helpers are Linux-only; other systems use `other`.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -307,6 +310,22 @@ pub(crate) fn parse_pactl(text: &str, card: u32) -> Vec<(String, String)> {
 
 /// Find every connected FTDX3000 (CP2105 bridge), with paired audio.
 pub fn detect_radios() -> Vec<DetectedRadio> {
+    #[cfg(target_os = "linux")]
+    return linux_detect_radios();
+    #[cfg(not(target_os = "linux"))]
+    return other::detect_radios();
+}
+
+/// All USB serial ports, for manual selection.
+pub fn list_serial_ports() -> Vec<SerialPortEntry> {
+    #[cfg(target_os = "linux")]
+    return linux_list_serial_ports();
+    #[cfg(not(target_os = "linux"))]
+    return other::list_serial_ports();
+}
+
+#[cfg(target_os = "linux")]
+fn linux_detect_radios() -> Vec<DetectedRadio> {
     let mut radios = Vec::new();
     let Ok(entries) = fs::read_dir(SYS_USB) else { return radios };
     for entry in entries.flatten() {
@@ -336,8 +355,8 @@ pub fn detect_radios() -> Vec<DetectedRadio> {
     radios
 }
 
-/// All USB serial ports, for manual selection.
-pub fn list_serial_ports() -> Vec<SerialPortEntry> {
+#[cfg(target_os = "linux")]
+fn linux_list_serial_ports() -> Vec<SerialPortEntry> {
     let mut out = Vec::new();
     let Ok(entries) = fs::read_dir("/sys/class/tty") else { return out };
     for entry in entries.flatten() {
@@ -367,6 +386,85 @@ pub fn list_serial_ports() -> Vec<SerialPortEntry> {
     }
     out.sort_by(|a, b| a.port.dev.cmp(&b.port.dev));
     out
+}
+
+/// macOS (and other non-Linux) detection through the serial library's USB
+/// enumeration. On macOS only the `/dev/cu.*` call-out devices are used.
+#[cfg(not(target_os = "linux"))]
+mod other {
+    use super::*;
+
+    fn usable(name: &str) -> bool {
+        !cfg!(target_os = "macos") || name.starts_with("/dev/cu.")
+    }
+
+    fn info(name: &str) -> PortInfo {
+        PortInfo { dev: name.to_string(), by_id: None, users: Vec::new() }
+    }
+
+    pub fn detect_radios() -> Vec<DetectedRadio> {
+        let ports = serialport::available_ports().unwrap_or_default();
+        // CP2105 ports grouped by USB serial number: (interface, name).
+        let mut groups: std::collections::BTreeMap<String, Vec<(u8, String)>> = Default::default();
+        for p in ports {
+            if let serialport::SerialPortType::UsbPort(u) = &p.port_type {
+                if u.vid == 0x10c4 && u.pid == 0xea70 && usable(&p.port_name) {
+                    let key = u.serial_number.clone().unwrap_or_default();
+                    groups.entry(key).or_default().push((u.interface.unwrap_or(u8::MAX), p.port_name.clone()));
+                }
+            }
+        }
+        let (rx, tx) = crate::audio::radio_devices();
+        let name_of = |d: &Option<crate::audio::AudioDevice>| d.as_ref().map(|d| d.to_string());
+        let audio = rx.as_ref().map(|_| AudioInfo {
+            card_id: name_of(&rx).unwrap_or_default(),
+            name: name_of(&rx).unwrap_or_default(),
+            source: name_of(&rx).map(|n| (n.clone(), n)),
+            sink: name_of(&tx).map(|n| (n.clone(), n)),
+            ..Default::default()
+        });
+        groups
+            .into_iter()
+            .filter_map(|(serial, mut ports)| {
+                // Interface 0 is the Enhanced (CAT) port; without interface
+                // numbers, the first name sorts first.
+                ports.sort();
+                let cat = ports.first()?.1.clone();
+                let keying = ports.get(1).map(|p| info(&p.1));
+                Some(DetectedRadio {
+                    usb_path: serial.clone(),
+                    serial_number: (!serial.is_empty()).then_some(serial),
+                    cat: info(&cat),
+                    keying,
+                    audio: audio.clone(),
+                })
+            })
+            .collect()
+    }
+
+    pub fn list_serial_ports() -> Vec<SerialPortEntry> {
+        let mut out: Vec<SerialPortEntry> = serialport::available_ports()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| usable(&p.port_name))
+            .map(|p| {
+                let description = match &p.port_type {
+                    serialport::SerialPortType::UsbPort(u) => {
+                        let iface = match (u.vid, u.pid, u.interface) {
+                            (0x10c4, 0xea70, Some(0)) => " Enhanced Com Port",
+                            (0x10c4, 0xea70, Some(1)) => " Standard Com Port",
+                            _ => "",
+                        };
+                        format!("{} {}{iface}", u.manufacturer.clone().unwrap_or_default(), u.product.clone().unwrap_or_default()).trim().to_string()
+                    }
+                    _ => String::new(),
+                };
+                SerialPortEntry { port: info(&p.port_name), description }
+            })
+            .collect();
+        out.sort_by(|a, b| a.port.dev.cmp(&b.port.dev));
+        out
+    }
 }
 
 #[cfg(test)]

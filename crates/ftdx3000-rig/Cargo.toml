@@ -14,11 +14,14 @@ nix = { version = "0.31.3", features = ["term", "fs", "poll", "signal", "ioctl",
 parking_lot = "0.13.0"
 rustfft = "6.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
-serialport = { version = "4.10.1", default-features = false }
+serialport = { version = "4.10.1", default-features = false, features = ["usbportinfo-interface"] }
 sha2 = "0.11.1"
 socket2 = { version = "0.6.5", features = ["all"] }
 toml = "1.1.8"
 
 [dependencies.env_logger]
 version = "0.11.11"
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+cpal = "0.18.2"
 

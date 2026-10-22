@@ -49,6 +49,48 @@ Binaries in `target/release/`:
 
 Your user must be in the `dialout` group to open the radio's serial port.
 
+### macOS
+
+RigHelm also builds on macOS (Apple Silicon and Intel). Audio uses CoreAudio there instead
+of PipeWire.
+
+1. Install the Xcode command-line tools and Rust:
+
+   ```bash
+   xcode-select --install
+   ```
+
+   ```bash
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
+
+2. Build and run from the repository:
+
+   ```bash
+   cargo build --release
+   ```
+
+   ```bash
+   ./target/release/righelm
+   ```
+
+Notes for the Mac:
+
+- **Microphone permission.** The first time RigHelm records audio (the radio's receive audio
+  for the waterfall or remote server, or your microphone for remote transmit), macOS asks
+  to allow microphone access for the app you started it from (Terminal). Allow it, or audio
+  stays silent. You can change it later in System Settings → Privacy & Security →
+  Microphone.
+- **Network permission.** For LAN remote, macOS may ask whether RigHelm may accept incoming
+  network connections. Allow it so it can find, and be found by, other copies of RigHelm.
+- **Radio connected to the Mac.** The radio's ports appear as `/dev/cu.*` devices, using
+  either macOS's built-in driver or Silicon Labs' CP210x driver, and are auto-detected. The
+  radio's audio is found by name ("USB Audio CODEC").
+- **Virtual ports** are created in `/tmp/ftdx3000-<your user name>/` (e.g.
+  `/tmp/ftdx3000-jane/vcom1`).
+- **Controlling a radio on your Linux machine** needs no serial port on the Mac at all.
+  Open Remote (LAN) and connect.
+
 ## Radio settings
 
 | menu | setting           | value |

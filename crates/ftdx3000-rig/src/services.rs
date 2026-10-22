@@ -174,10 +174,7 @@ pub struct Services {
 
 /// The radio codec's capture and playback devices, if detected.
 pub fn radio_audio_devices() -> (Option<AudioDevice>, Option<AudioDevice>) {
-    let Some(a) = crate::detect::detect_radios().into_iter().find_map(|r| r.audio) else { return (None, None) };
-    let rx = a.source.as_ref().map(|(n, _)| AudioDevice::PipeWire(n.clone())).unwrap_or(AudioDevice::Alsa(a.alsa_plughw()));
-    let tx = a.sink.as_ref().map(|(n, _)| AudioDevice::PipeWire(n.clone())).unwrap_or(AudioDevice::Alsa(a.alsa_plughw()));
-    (Some(rx), Some(tx))
+    crate::audio::radio_devices()
 }
 
 impl Services {

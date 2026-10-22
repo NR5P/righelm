@@ -11,7 +11,7 @@
 //! * `AI` (auto information) is emulated per client: a program that turns AI
 //!   on gets pushed updates without changing the radio's AI for everyone else.
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -227,12 +227,11 @@ fn serve(
                 continue;
             }
         }
-        let n = match pty.master.read(&mut buf) {
-            Ok(0) => continue,
-            Ok(n) => n,
+        let n = match pty.read(&mut buf) {
+            Ok(n) if n > 0 => n,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-            Err(_) => {
-                // EIO: the last program closed the port.
+            _ => {
+                // 0 bytes or EIO: the last program closed the port.
                 hangup(&mut pty, &mut framer);
                 continue;
             }
@@ -300,6 +299,7 @@ pub(crate) fn handle(rig: &Rig, config: &VirtualPortConfig, source: &Source, cli
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
     use crate::engine::EngineConfig;
     use crate::sim::SimRadio;
     use std::fs::OpenOptions;

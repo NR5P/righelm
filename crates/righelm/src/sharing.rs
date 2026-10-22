@@ -107,10 +107,12 @@ fn radio_section(app: &mut App, ui: &mut Ui) {
                         ui.label(format!("card {} \"{}\" — {}", a.card_index, a.card_id, a.name));
                         ui.label("");
                         ui.end_row();
-                        ui.label("  ALSA");
-                        ui.label(RichText::new(a.alsa_plughw()).monospace());
-                        copy_button(ui, &a.alsa_plughw());
-                        ui.end_row();
+                        if cfg!(target_os = "linux") {
+                            ui.label("  ALSA");
+                            ui.label(RichText::new(a.alsa_plughw()).monospace());
+                            copy_button(ui, &a.alsa_plughw());
+                            ui.end_row();
+                        }
                         if let Some((n, d)) = &a.source {
                             ui.label("  RX audio (input)");
                             ui.label(RichText::new(d).color(CYAN)).on_hover_text(n);

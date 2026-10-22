@@ -3,7 +3,7 @@
 //!
 //!     righelm-sim [LINK_PATH]     (default: $XDG_RUNTIME_DIR/ftdx3000/sim)
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -29,7 +29,7 @@ fn main() -> std::io::Result<()> {
     let mut active = false;
     while !STOP.load(Ordering::Relaxed) {
         match pty.wait(Duration::from_millis(200))? {
-            PtyEvent::Readable => match pty.master.read(&mut buf) {
+            PtyEvent::Readable => match pty.read(&mut buf) {
                 Ok(n) if n > 0 => {
                     active = true;
                     let mut out = String::new();
