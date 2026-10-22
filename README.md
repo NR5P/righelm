@@ -234,3 +234,7 @@ tests.
 - The FTDX3000 does not send its band scope over CAT, so there is no panadapter.
 - DATA-mode filter widths follow menu 067: PSK widths when DATA MODE = PSK, SSB widths
   when OTHER.
+
+## License
+
+RigHelm is free software under the [GNU General Public License v3 or later](LICENSE).
