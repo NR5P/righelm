@@ -1,0 +1,695 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RigHelm Intro</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { position: absolute; inset: 0; margin: auto; display: block; }
+  #ui { position: fixed; left: 16px; bottom: 16px; display: flex; gap: 8px; font: 14px system-ui, sans-serif; }
+  #ui button { background: #1c222b; color: #ffb02e; border: 1px solid #ffb02e55; border-radius: 6px; padding: 8px 14px; cursor: pointer; font: inherit; }
+  body.render #ui { display: none; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<div id="ui"><button id="play">&#9654; Play</button></div>
+<script src="timeline.js"></script>
+<script>
+'use strict';
+const TL = window.TIMELINE;
+const T = TL.T;
+const W = 1920, H = 1080, FPS = TL.FPS;
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+
+const AMBER = '#ffb02e';
+const UI_FONT = 'system-ui, -apple-system, "Helvetica Neue", sans-serif';
+const MONO = '"SF Mono", Menlo, Monaco, monospace';
+
+// ---------- math ----------
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const easeOutCubic = (x) => 1 - Math.pow(1 - x, 3);
+const easeInCubic = (x) => x * x * x;
+const easeInOutCubic = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+const easeOutBack = (x, s = 1.70158) => 1 + (s + 1) * Math.pow(x - 1, 3) + s * Math.pow(x - 1, 2);
+const easeOutExpo = (x) => (x >= 1 ? 1 : 1 - Math.pow(2, -10 * x));
+function hash(a, b) {
+  let h = Math.imul(a | 0, 374761393) ^ Math.imul(b | 0, 668265263);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+// ---------- waterfall (same palette as the app) ----------
+const STOPS = [[0, [0, 0, 6]], [0.25, [10, 26, 110]], [0.5, [18, 164, 214]], [0.7, [242, 227, 11]], [0.85, [245, 120, 30]], [1, [255, 255, 255]]];
+const LUT = new Uint8ClampedArray(256 * 3);
+for (let i = 0; i < 256; i++) {
+  const t = i / 255;
+  let k = 0;
+  while (k < STOPS.length - 2 && t > STOPS[k + 1][0]) k++;
+  const [a0, ac] = STOPS[k], [b0, bc] = STOPS[k + 1];
+  const f = clamp((t - a0) / (b0 - a0));
+  for (let j = 0; j < 3; j++) LUT[i * 3 + j] = ac[j] + f * (bc[j] - ac[j]);
+}
+
+const WF_W = 640, WF_H = 360, HZ = 10, MID = WF_W / 2;
+const wfCanvas = document.createElement('canvas');
+wfCanvas.width = WF_W; wfCanvas.height = WF_H;
+const wfCtx = wfCanvas.getContext('2d');
+const wfImg = wfCtx.createImageData(WF_W, WF_H);
+const rowCache = new Map();
+const acc = new Float32Array(WF_W);
+
+function gauss(center, sigma, amp) {
+  const lo = Math.max(0, Math.floor(center - 4 * sigma)), hi = Math.min(WF_W - 1, Math.ceil(center + 4 * sigma));
+  for (let x = lo; x <= hi; x++) { const d = (x - center) / sigma; acc[x] += amp * Math.exp(-0.5 * d * d); }
+}
+
+// A row is a pure function of the moment it was received, so it never changes as it scrolls.
+function wfRow(k) {
+  let row = rowCache.get(k);
+  if (row) return row;
+  const rt = k / FPS;
+  const dial = TL.freqAt(rt);
+  const heat = Math.pow(seg(rt, T.riseStart, T.impact), 2) * (rt < T.impact ? 1 : 0);
+  for (let x = 0; x < WF_W; x++) {
+    acc[x] = 0.19 + 0.11 * hash(x, k) + 0.07 * hash(x >> 2, k >> 1) + heat * 0.2 * hash(x + 977, k);
+  }
+  const BIN = 180;
+  const f0 = dial - MID * HZ, f1 = dial + MID * HZ;
+  for (let b = Math.floor(f0 / BIN) - 1; b <= Math.ceil(f1 / BIN) + 1; b++) {
+    if (hash(b, 7) > 0.3) continue;
+    let fc = b * BIN + hash(b, 3) * BIN;
+    if (Math.abs(fc - TL.F1) < 500) continue;
+    fc += Math.sin(rt * 0.6 + hash(b, 4) * 6.28) * 5;
+    const col = MID + (fc - dial) / HZ;
+    if (col < -20 || col > WF_W + 20) continue;
+    const amp = 0.28 + 0.32 * hash(b, 11);
+    if (hash(b, 5) < 0.75) {
+      const unit = 0.045 + 0.05 * hash(b, 9);
+      const on = hash(b * 31 + 5, Math.floor(rt / unit)) > 0.45 && hash(b, Math.floor(rt / 1.3 + hash(b, 2) * 5)) > 0.3;
+      if (on) gauss(col, 1.1, amp);
+    } else {
+      gauss(col, 1.5, amp * (0.75 + 0.25 * Math.sin(rt * 2 + b)));
+    }
+  }
+  const kc = TL.keyCover(rt, rt + 1 / FPS) * FPS;
+  const sc = MID + (TL.F1 - dial) / HZ;
+  if (kc > 0) { gauss(sc, 1.4, 0.78 * kc); gauss(sc, 5, 0.14 * kc); }
+  row = new Uint8ClampedArray(WF_W * 4);
+  for (let x = 0; x < WF_W; x++) {
+    const i = (clamp(acc[x]) * 255) | 0;
+    row[x * 4] = LUT[i * 3]; row[x * 4 + 1] = LUT[i * 3 + 1]; row[x * 4 + 2] = LUT[i * 3 + 2]; row[x * 4 + 3] = 255;
+  }
+  rowCache.set(k, row);
+  if (rowCache.size > 1500) rowCache.delete(rowCache.keys().next().value);
+  return row;
+}
+
+function drawWaterfall(fi, alpha) {
+  if (alpha <= 0) return;
+  const d = wfImg.data;
+  for (let y = 0; y < WF_H; y++) d.set(wfRow(fi - y), y * WF_W * 4);
+  wfCtx.putImageData(wfImg, 0, 0);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(wfCanvas, 0, 0, W, H);
+  ctx.restore();
+}
+
+// Passband, CW pitch line and a scrolling frequency scale, like the app's waterfall.
+function drawScale(t, alpha) {
+  if (alpha <= 0) return;
+  const dial = TL.freqAt(t);
+  const px = W / WF_W;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  const half = (250 / HZ) * px;
+  ctx.fillStyle = 'rgba(255,176,46,0.05)';
+  ctx.fillRect(W / 2 - half, 52, half * 2, H);
+  ctx.strokeStyle = 'rgba(255,176,46,0.35)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(W / 2 - half, 52); ctx.lineTo(W / 2 - half, H);
+  ctx.moveTo(W / 2 + half, 52); ctx.lineTo(W / 2 + half, H);
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,80,80,0.8)';
+  ctx.beginPath(); ctx.moveTo(W / 2, 52); ctx.lineTo(W / 2, 110); ctx.stroke();
+  // course line: steer the signal onto it
+  ctx.strokeStyle = 'rgba(255,176,46,0.4)';
+  ctx.setLineDash([10, 12]);
+  ctx.beginPath(); ctx.moveTo(W / 2, 116); ctx.lineTo(W / 2, HELM_Y - 228 * HELM_S - 44); ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = 'rgba(6,8,11,0.88)';
+  ctx.fillRect(0, 0, W, 52);
+  ctx.fillStyle = 'rgba(255,176,46,0.25)';
+  ctx.fillRect(0, 51, W, 1);
+  const lo = dial - MID * HZ, hi = dial + MID * HZ;
+  ctx.strokeStyle = 'rgba(220,210,190,0.55)';
+  ctx.fillStyle = 'rgba(230,220,200,0.85)';
+  ctx.font = `500 17px ${MONO}`;
+  ctx.textAlign = 'center';
+  ctx.beginPath();
+  for (let f = Math.ceil(lo / 100) * 100; f <= hi; f += 100) {
+    const x = (f - lo) / HZ * px;
+    const major = f % 1000 === 0;
+    ctx.moveTo(x, 52); ctx.lineTo(x, major ? 36 : 45);
+    if (major) ctx.fillText((f / 1e6).toFixed(3), x, 26);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+// ---------- seven-segment VFO display ----------
+const SEGS = { 0: 'abcdef', 1: 'bc', 2: 'abged', 3: 'abgcd', 4: 'fgbc', 5: 'afgcd', 6: 'afgedc', 7: 'abc', 8: 'abcdefg', 9: 'abcdfg', ' ': '' };
+function segPath(p, x, y, w, h, th, s) {
+  const g = th * 0.14;
+  const Hs = (x0, x1, cy) => { p.moveTo(x0, cy); p.lineTo(x0 + th / 2, cy - th / 2); p.lineTo(x1 - th / 2, cy - th / 2); p.lineTo(x1, cy); p.lineTo(x1 - th / 2, cy + th / 2); p.lineTo(x0 + th / 2, cy + th / 2); p.closePath(); };
+  const Vs = (cx, y0, y1) => { p.moveTo(cx, y0); p.lineTo(cx + th / 2, y0 + th / 2); p.lineTo(cx + th / 2, y1 - th / 2); p.lineTo(cx, y1); p.lineTo(cx - th / 2, y1 - th / 2); p.lineTo(cx - th / 2, y0 + th / 2); p.closePath(); };
+  const l = x + th / 2, r = x + w - th / 2, t = y + th / 2, m = y + h / 2, b = y + h - th / 2;
+  switch (s) {
+    case 'a': Hs(l + g, r - g, t); break;
+    case 'g': Hs(l + g, r - g, m); break;
+    case 'd': Hs(l + g, r - g, b); break;
+    case 'f': Vs(l, t + g, m - g); break;
+    case 'b': Vs(r, t + g, m - g); break;
+    case 'e': Vs(l, m + g, b - g); break;
+    case 'c': Vs(r, m + g, b - g); break;
+  }
+}
+
+function drawFreq(freq, cx, cy) {
+  const s = String(freq).padStart(8, ' ');
+  const dw = 92, dh = 168, th = 17, pitch = 118, dpGap = 16;
+  const total = 8 * pitch - (pitch - dw) + 2 * dpGap;
+  let x = cx - total / 2;
+  const y = cy - dh / 2;
+  const lit = new Path2D(), unlit = new Path2D();
+  for (let i = 0; i < 8; i++) {
+    const on = SEGS[s[i]];
+    for (const sg of 'abcdefg') segPath(on.includes(sg) ? lit : unlit, x, y, dw, dh, th, sg);
+    x += pitch;
+    if (i === 1 || i === 4) {
+      (s[0] === ' ' && i === 1 ? unlit : lit).rect(x - pitch + dw + 5, y + dh - th, th, th);
+      x += dpGap * 2;
+    }
+  }
+  ctx.save();
+  ctx.translate(cx, cy); ctx.transform(1, 0, -0.09, 1, 0, 0); ctx.translate(-cx, -cy);
+  ctx.fillStyle = 'rgba(255,176,46,0.07)';
+  ctx.fill(unlit);
+  ctx.shadowColor = 'rgba(255,140,20,0.9)';
+  ctx.shadowBlur = 34;
+  ctx.fillStyle = AMBER;
+  ctx.fill(lit);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(255,236,190,0.55)';
+  ctx.fill(lit);
+  ctx.restore();
+  return total;
+}
+
+function sLevel(t, fi) {
+  let lvl = 0;
+  for (const [a, b] of TL.keys) {
+    if (t >= a && t < b) lvl = Math.max(lvl, clamp((t - a) / 0.012));
+    else if (t >= b) lvl = Math.max(lvl, Math.exp(-(t - b) / 0.28));
+  }
+  return Math.max(lvl * 0.92 * TL.passband(TL.freqAt(t)), 0.1 + 0.05 * hash(fi, 3));
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, r);
+}
+
+function drawPanel(t, fi, alpha, dx) {
+  if (alpha <= 0) return;
+  const pw = 1260, ph = 350, px = W / 2 - pw / 2 + dx, py = 170;
+  const sc = lerp(0.96, 1, easeOutCubic(seg(t, 0.05, 0.6)));
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(W / 2, py + ph / 2); ctx.scale(sc, sc); ctx.translate(-W / 2, -(py + ph / 2));
+  const bg = ctx.createLinearGradient(0, py, 0, py + ph);
+  bg.addColorStop(0, 'rgba(42,26,4,0.62)'); bg.addColorStop(1, 'rgba(18,11,2,0.7)');
+  roundRect(px, py, pw, ph, 26);
+  ctx.fillStyle = bg; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,176,46,0.28)'; ctx.lineWidth = 2; ctx.stroke();
+
+  ctx.font = `700 26px ${UI_FONT}`;
+  ctx.fillStyle = AMBER; ctx.textAlign = 'left';
+  ctx.fillText('VFO-A', px + 44, py + 54);
+  ctx.fillStyle = 'rgba(90,220,120,0.95)';
+  ctx.shadowColor = 'rgba(90,220,120,0.8)'; ctx.shadowBlur = 14;
+  ctx.fillText('RX', px + 150, py + 54);
+  ctx.shadowBlur = 0;
+  roundRect(px + pw - 132, py + 26, 88, 40, 8);
+  ctx.strokeStyle = AMBER; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = AMBER; ctx.textAlign = 'center';
+  ctx.fillText('CW', px + pw - 88, py + 55);
+
+  const fx = W / 2 + dx - 40;
+  const tw = drawFreq(TL.freqAt(t), fx, py + 168);
+  ctx.font = `700 30px ${UI_FONT}`;
+  ctx.fillStyle = AMBER; ctx.textAlign = 'left';
+  ctx.fillText('MHz', fx + tw / 2 + 22, py + 250);
+
+  // S-meter
+  const n = 30, mx = px + 120, my = py + 292, mw = pw - 240, sw = mw / n;
+  const lit = Math.round(sLevel(t, fi) * n);
+  for (let i = 0; i < n; i++) {
+    const over = i >= 18;
+    const on = i < lit;
+    ctx.fillStyle = on ? (over ? '#eb463c' : AMBER) : 'rgba(255,176,46,0.09)';
+    if (on) { ctx.shadowColor = over ? 'rgba(235,70,60,0.8)' : 'rgba(255,150,30,0.8)'; ctx.shadowBlur = 12; }
+    ctx.fillRect(mx + i * sw + 2, my, sw - 5, 22);
+    ctx.shadowBlur = 0;
+  }
+  ctx.font = `600 16px ${MONO}`;
+  ctx.fillStyle = 'rgba(255,200,140,0.6)'; ctx.textAlign = 'center';
+  const marks = [['S', -1.2], ['1', 1], ['3', 5], ['5', 9], ['7', 13], ['9', 17.5], ['+20', 23], ['+40', 27.5]];
+  for (const [lab, i] of marks) ctx.fillText(lab, mx + i * sw + sw / 2, my + 44);
+  ctx.restore();
+}
+
+function drawDecode(t, fi, alpha, dx) {
+  if (alpha <= 0) return;
+  const chars = TL.chars;
+  const fs = 96, spacing = 70;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.font = `700 ${fs}px ${MONO}`;
+  const cw = ctx.measureText('M').width + spacing;
+  const x0 = W / 2 - (chars.length * cw - spacing) / 2 + dx;
+  const by = 650;
+  ctx.textAlign = 'left';
+  let cursor = 0;
+  for (let i = 0; i < chars.length; i++) {
+    const c = chars[i];
+    const x = x0 + i * cw;
+    if (t >= c.end) {
+      const k = seg(t, c.end, c.end + 0.18);
+      const sc = lerp(1.35, 1, easeOutCubic(k));
+      ctx.save();
+      ctx.translate(x + cw / 2 - spacing / 2, by - fs * 0.35);
+      ctx.scale(sc, sc);
+      ctx.fillStyle = k < 1 ? `rgb(255,${lerp(255, 214, k) | 0},${lerp(255, 150, k) | 0})` : '#ffd696';
+      ctx.shadowColor = 'rgba(255,150,30,0.9)'; ctx.shadowBlur = lerp(50, 22, k);
+      ctx.textAlign = 'center';
+      ctx.fillText(c.ch, 0, fs * 0.35);
+      ctx.restore();
+      cursor = i + 1;
+    }
+    // dots and dashes appear under the letter as they are keyed
+    if (t >= c.start && t < c.end + 0.5) {
+      const fade = 1 - seg(t, c.end + 0.15, c.end + 0.5);
+      const unitW = 11, gap = 8;
+      const wTot = c.els.reduce((s, e) => s + (e.sym === '.' ? unitW : unitW * 3) + gap, -gap);
+      let ex = x + (cw - spacing) / 2 - wTot / 2;
+      for (const e of c.els) {
+        const w = e.sym === '.' ? unitW : unitW * 3;
+        if (t >= e.a) {
+          const keyed = t < e.b;
+          ctx.fillStyle = keyed ? '#ffffff' : AMBER;
+          ctx.globalAlpha = alpha * fade;
+          ctx.shadowColor = 'rgba(255,170,60,0.9)'; ctx.shadowBlur = keyed ? 22 : 8;
+          roundRect(ex, by + 44, w, unitW, unitW / 2);
+          ctx.fill();
+        }
+        ex += w + gap;
+      }
+      ctx.globalAlpha = alpha;
+      ctx.shadowBlur = 0;
+    }
+  }
+  // blinking block cursor
+  if (cursor < chars.length && Math.floor(t * 3) % 2 === 0) {
+    ctx.fillStyle = 'rgba(255,176,46,0.85)';
+    ctx.fillRect(x0 + cursor * cw + 4, by - fs * 0.72, cw - spacing - 8, fs * 0.82);
+  }
+  ctx.restore();
+}
+
+// ---------- the helm (geometry from assets/righelm.svg) ----------
+// The helm sits in the foreground like a ship's wheel, and turning it is what tunes the radio.
+const HELM_Y = 1120, HELM_S = 1.6;
+
+function drawWheel(cx, cy, s, rot, P) {
+  const spokes = (r) => {
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++) {
+      const a = r + i * Math.PI / 4 - Math.PI / 2;
+      ctx.moveTo(Math.cos(a) * 70, Math.sin(a) * 70);
+      ctx.lineTo(Math.cos(a) * 218, Math.sin(a) * 218);
+    }
+    ctx.stroke();
+  };
+  ctx.save();
+  ctx.translate(cx, cy); ctx.scale(s, s);
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 20;
+  // motion trails while it spins
+  if (Math.abs(P.blur) > 0.01) {
+    ctx.strokeStyle = 'rgba(224,127,48,0.16)';
+    for (let k = 1; k <= 4; k++) spokes(rot - P.blur * k / 4);
+  }
+  ctx.rotate(rot);
+  const wood = ctx.createLinearGradient(-196, -196, 196, 196);
+  wood.addColorStop(0, '#ffc98a'); wood.addColorStop(0.5, '#e07f30'); wood.addColorStop(1, '#96501b');
+  ctx.shadowColor = `rgba(255,150,40,${0.75 * P.glow})`;
+  ctx.shadowBlur = 50 * P.glow * s;
+  ctx.strokeStyle = wood;
+  spokes(0);
+  ctx.lineWidth = 26;
+  ctx.beginPath(); ctx.arc(0, 0, 160, 0, Math.PI * 2); ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(255,241,214,0.25)';
+  ctx.beginPath(); ctx.arc(0, 0, 160, 0, Math.PI * 2); ctx.stroke();
+  // the hub is the VFO knob
+  const kg = ctx.createRadialGradient(-14.4, -21.6, 0, -14.4, -21.6, 108);
+  kg.addColorStop(0, '#5d636d'); kg.addColorStop(0.6, '#272b32'); kg.addColorStop(1, '#121418');
+  ctx.beginPath(); ctx.arc(0, 0, 72, 0, Math.PI * 2);
+  ctx.fillStyle = kg; ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = '#0b0c0e'; ctx.stroke();
+  ctx.beginPath();
+  for (let i = 0; i < 36; i++) {
+    const a = i * Math.PI / 18;
+    ctx.moveTo(Math.cos(a) * 60, Math.sin(a) * 60); ctx.lineTo(Math.cos(a) * 70, Math.sin(a) * 70);
+  }
+  ctx.stroke();
+  ctx.beginPath(); ctx.arc(22, -22, 11, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(11,12,14,0.7)'; ctx.fill();
+  ctx.lineWidth = 9; ctx.strokeStyle = AMBER;
+  ctx.shadowColor = 'rgba(255,150,40,0.9)'; ctx.shadowBlur = 16 * s;
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -52); ctx.stroke();
+  ctx.restore();
+}
+
+// Lubber mark above the helm, on the course line.
+function drawMark(x, y, alpha) {
+  if (alpha <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = AMBER;
+  ctx.shadowColor = 'rgba(255,150,40,0.9)'; ctx.shadowBlur = 18;
+  ctx.beginPath(); ctx.moveTo(x - 18, y - 26); ctx.lineTo(x + 18, y - 26); ctx.lineTo(x, y); ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+// ---------- wordmark lockup ----------
+const WORD_FONT = `800 200px ${UI_FONT}`;
+const TAG_FONT = `500 46px ${UI_FONT}`;
+const CHIP_FONT = `600 27px ${UI_FONT}`;
+const WORD_TRACK = 6;
+const WHEEL_S = 0.9;
+let LAYOUT = null;
+function layout() {
+  if (LAYOUT) return LAYOUT;
+  ctx.save();
+  ctx.font = WORD_FONT;
+  const word = TL.WORD;
+  const letterX = [];
+  for (let i = 0; i < word.length; i++) letterX.push(ctx.measureText(word.slice(0, i)).width + i * WORD_TRACK);
+  const wordW = ctx.measureText(word).width + (word.length - 1) * WORD_TRACK;
+  ctx.font = TAG_FONT;
+  const tagW = ctx.measureText('Rig control for the Yaesu FTDX3000').width;
+  ctx.font = CHIP_FONT;
+  const chipPad = 24, chipGap = 14;
+  const chipW = TL.chipLabels.map((l) => ctx.measureText(l).width + chipPad * 2);
+  const chipsW = chipW.reduce((a, b) => a + b, 0) + chipGap * (chipW.length - 1);
+  ctx.restore();
+  const R = (218 + 10) * WHEEL_S, gap = 96;
+  const textW = Math.max(wordW, tagW, chipsW);
+  const x0 = (W - (2 * R + gap + textW)) / 2;
+  LAYOUT = { letterX, wordW, chipW, chipGap, wheelX: x0 + R, textX: x0 + 2 * R + gap, base: 520, R };
+  return LAYOUT;
+}
+
+const wordCanvas = document.createElement('canvas');
+wordCanvas.width = 1400; wordCanvas.height = 300;
+const wctx = wordCanvas.getContext('2d');
+
+function drawWordmark(t) {
+  const L = layout();
+  const word = TL.WORD;
+  wctx.clearRect(0, 0, wordCanvas.width, wordCanvas.height);
+  wctx.font = WORD_FONT;
+  wctx.textBaseline = 'alphabetic';
+  const base = 230;
+  const amberGrad = wctx.createLinearGradient(0, base - 150, 0, base);
+  amberGrad.addColorStop(0, '#ffd88a'); amberGrad.addColorStop(1, '#ff951c');
+  let any = false;
+  for (let i = 0; i < word.length; i++) {
+    const k = seg(t, T.wordStart + i * T.letterStep, T.wordStart + i * T.letterStep + 0.45);
+    if (k <= 0) continue;
+    any = true;
+    const e = easeOutCubic(k);
+    wctx.globalAlpha = clamp(k * 2.2);
+    wctx.fillStyle = i < 3 ? '#f4efe6' : amberGrad;
+    wctx.fillText(word[i], 20 + L.letterX[i], base + (1 - e) * 70);
+  }
+  wctx.globalAlpha = 1;
+  if (!any) return;
+  const sk = seg(t, T.shine, T.shine + 0.75);
+  if (sk > 0 && sk < 1) {
+    const sx = lerp(-300, L.wordW + 300, easeInOutCubic(sk));
+    const g = wctx.createLinearGradient(sx - 140, 0, sx + 140, 0);
+    g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(0.5, 'rgba(255,255,255,0.85)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    wctx.globalCompositeOperation = 'source-atop';
+    wctx.fillStyle = g;
+    wctx.fillRect(0, 0, wordCanvas.width, wordCanvas.height);
+    wctx.globalCompositeOperation = 'source-over';
+  }
+  ctx.save();
+  ctx.shadowColor = 'rgba(255,140,30,0.45)';
+  ctx.shadowBlur = 40;
+  ctx.drawImage(wordCanvas, L.textX - 20, L.base - base);
+  ctx.restore();
+}
+
+function drawTagline(t) {
+  const L = layout();
+  const k = seg(t, T.tagline, T.tagline + 0.5);
+  if (k <= 0) return;
+  ctx.save();
+  // underline
+  const lk = easeInOutCubic(seg(t, T.wordStart + 0.3, T.wordStart + 0.9));
+  const lg = ctx.createLinearGradient(L.textX, 0, L.textX + L.wordW, 0);
+  lg.addColorStop(0, 'rgba(255,176,46,0.9)'); lg.addColorStop(1, 'rgba(255,176,46,0)');
+  ctx.fillStyle = lg;
+  ctx.fillRect(L.textX + 4, L.base + 30, L.wordW * lk, 3);
+  ctx.globalAlpha = easeOutCubic(k);
+  ctx.font = TAG_FONT;
+  ctx.fillStyle = '#d6cdbf';
+  ctx.textAlign = 'left';
+  ctx.fillText('Rig control for the Yaesu FTDX3000', L.textX + 4, L.base + 98 + (1 - easeOutCubic(k)) * 24);
+  ctx.restore();
+}
+
+function drawChips(t) {
+  const L = layout();
+  let x = L.textX + 4;
+  const y = L.base + 136, h = 54;
+  ctx.save();
+  ctx.font = CHIP_FONT;
+  ctx.textAlign = 'center';
+  TL.chipLabels.forEach((label, i) => {
+    const k = seg(t, T.chips + i * T.chipStep, T.chips + i * T.chipStep + 0.4);
+    const w = L.chipW[i];
+    if (k > 0) {
+      const sc = lerp(0.7, 1, easeOutBack(k, 2.2));
+      ctx.save();
+      ctx.globalAlpha = clamp(k * 2);
+      ctx.translate(x + w / 2, y + h / 2); ctx.scale(sc, sc);
+      roundRect(-w / 2, -h / 2, w, h, h / 2);
+      ctx.fillStyle = 'rgba(255,176,46,0.09)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(255,176,46,0.55)'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = '#eadfcd';
+      ctx.fillText(label, 0, 10);
+      ctx.restore();
+    }
+    x += w + L.chipGap;
+  });
+  ctx.restore();
+}
+
+// ---------- overlays ----------
+const vignette = document.createElement('canvas');
+vignette.width = W; vignette.height = H;
+{
+  const v = vignette.getContext('2d');
+  const g = v.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 1.05);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.85)');
+  v.fillStyle = g; v.fillRect(0, 0, W, H);
+  v.fillStyle = 'rgba(0,0,0,0.12)';
+  for (let y = 0; y < H; y += 3) v.fillRect(0, y, W, 1);
+}
+const grains = [];
+for (let n = 0; n < 6; n++) {
+  const c = document.createElement('canvas');
+  c.width = 960; c.height = 540;
+  const g = c.getContext('2d');
+  const img = g.createImageData(c.width, c.height);
+  for (let i = 0; i < c.width * c.height; i++) {
+    const v = (hash(i, n + 50) * 255) | 0;
+    img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v; img.data[i * 4 + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  grains.push(c);
+}
+
+// ---------- the frame ----------
+function renderAt(t) {
+  const fi = Math.round(t * FPS);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  const bg = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, W * 0.7);
+  bg.addColorStop(0, '#11141a'); bg.addColorStop(1, '#050608');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // camera shake on impact
+  const sh = Math.max(0, 1 - (t - T.impact) / 0.35) * (t >= T.impact ? 1 : 0);
+  ctx.save();
+  ctx.translate((hash(fi, 91) - 0.5) * 26 * sh, (hash(fi, 92) - 0.5) * 26 * sh);
+
+  const wfAlpha = seg(t, 0, 0.7) * lerp(0.9, 0.32, easeInOutCubic(seg(t, T.impact, T.impact + 1.2)));
+  drawWaterfall(fi, wfAlpha);
+
+  const out = seg(t, T.riseStart, T.riseStart + 0.35);
+  const flick = out > 0 && hash(fi, 31) < out * 0.7 ? 0.25 : 1;
+  const jitter = (hash(fi, 32) - 0.5) * 40 * out;
+  const hud = seg(t, 0.05, 0.45) * (1 - out) * flick;
+  drawScale(t, seg(t, 0, 0.6) * (1 - out));
+  // keep the HUD readable over the waterfall
+  if (hud > 0) {
+    ctx.save();
+    ctx.globalAlpha = 0.55 * hud;
+    const g = ctx.createLinearGradient(0, 140, 0, 760);
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.2, 'rgba(0,0,0,0.6)'); g.addColorStop(0.85, 'rgba(0,0,0,0.6)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 140, W, 620);
+    ctx.restore();
+  }
+  drawPanel(t, fi, hud, jitter);
+  drawDecode(t, fi, seg(t, 0.3, 0.6) * (1 - seg(t, T.riseStart + 0.1, T.riseStart + 0.45)) * flick, -jitter);
+
+  // energy converging on the centre
+  if (t > T.riseStart && t < T.impact) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 110; i++) {
+      const t0 = T.riseStart + hash(i, 1) * 0.3;
+      const t1 = T.impact - 0.25 * hash(i, 2);
+      const p = seg(t, t0, t1);
+      if (p <= 0 || p >= 1) continue;
+      const a = hash(i, 3) * Math.PI * 2;
+      const r0 = 900 + hash(i, 4) * 700;
+      const e = easeInCubic(p);
+      const r = lerp(r0, 60, e);
+      const tail = 30 + 260 * e;
+      ctx.strokeStyle = `rgba(255,${150 + (hash(i, 5) * 90) | 0},60,${0.25 + 0.6 * p})`;
+      ctx.lineWidth = 1.5 + 2.5 * hash(i, 6);
+      ctx.beginPath();
+      ctx.moveTo(W / 2 + Math.cos(a) * r, H / 2 + Math.sin(a) * r);
+      ctx.lineTo(W / 2 + Math.cos(a) * (r + tail), H / 2 + Math.sin(a) * (r + tail));
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // the helm: steering in the foreground, up to centre stage for the hit, then into the lockup
+  {
+    const L = layout();
+    const rot = TL.theta(t);
+    const blur = rot - TL.theta(t - 1 / FPS);
+    const up = easeInOutCubic(seg(t, T.riseStart, T.impact));
+    const mv = easeInOutCubic(seg(t, T.impact + 0.15, T.impact + 0.7));
+    const cx = lerp(W / 2, L.wheelX, mv);
+    const cy = lerp(HELM_Y, H / 2, up);
+    const pop = t >= T.impact ? 0.06 * Math.exp(-(t - T.impact) / 0.12) : 0;
+    const s = lerp(lerp(HELM_S, 1.15, up), WHEEL_S, mv) * (1 + pop);
+    const glow = t >= T.impact ? 0.35 + 0.65 * Math.exp(-(t - T.impact) / 0.6) : 0.2 + 0.8 * seg(t, T.riseStart, T.impact);
+    // warm halo behind the wheel
+    const halo = ctx.createRadialGradient(cx, cy, 0, cx, cy, 420 * s);
+    halo.addColorStop(0, `rgba(255,150,40,${0.22 * glow})`); halo.addColorStop(1, 'rgba(255,150,40,0)');
+    ctx.fillStyle = halo;
+    ctx.fillRect(cx - 500 * s, cy - 500 * s, 1000 * s, 1000 * s);
+    drawWheel(cx, cy, s, rot, { glow, blur });
+    drawMark(cx, cy - 228 * s - 14, hud);
+  }
+
+  // impact flash and shockwave
+  if (t >= T.impact) {
+    const d = t - T.impact;
+    const f = Math.exp(-d / 0.13);
+    if (f > 0.01) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const g = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, W * 0.6);
+      g.addColorStop(0, `rgba(255,230,190,${0.9 * f})`); g.addColorStop(0.4, `rgba(255,140,40,${0.35 * f})`); g.addColorStop(1, 'rgba(255,120,30,0)');
+      ctx.fillStyle = g; ctx.fillRect(-50, -50, W + 100, H + 100);
+      ctx.restore();
+    }
+    const sk = seg(d, 0, 0.8);
+    if (sk < 1) {
+      ctx.save();
+      ctx.strokeStyle = `rgba(255,190,110,${0.7 * (1 - sk)})`;
+      ctx.lineWidth = lerp(14, 1, sk);
+      ctx.beginPath(); ctx.arc(W / 2, H / 2, lerp(220, 1500, easeOutExpo(sk)), 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  drawWordmark(t);
+  drawTagline(t);
+  drawChips(t);
+  ctx.restore();
+
+  ctx.drawImage(vignette, 0, 0);
+  ctx.save();
+  ctx.globalCompositeOperation = 'overlay';
+  ctx.globalAlpha = 0.07;
+  ctx.drawImage(grains[fi % grains.length], 0, 0, W, H);
+  ctx.restore();
+
+  const black = Math.max(1 - seg(t, 0, 0.35), seg(t, T.fadeOut, TL.DURATION));
+  if (black > 0) { ctx.fillStyle = `rgba(0,0,0,${black})`; ctx.fillRect(0, 0, W, H); }
+}
+window.renderAt = renderAt;
+
+// ---------- preview ----------
+const params = new URLSearchParams(location.search);
+if (params.has('render')) document.body.classList.add('render');
+function fit() {
+  const s = Math.min(innerWidth / W, innerHeight / H);
+  cv.style.width = W * s + 'px'; cv.style.height = H * s + 'px';
+}
+addEventListener('resize', fit); fit();
+renderAt(params.has('t') ? parseFloat(params.get('t')) : 6.5);
+
+let audio = null;
+document.getElementById('play').onclick = () => {
+  if (audio) audio.pause();
+  audio = new Audio('righelm-intro.wav');
+  const t0 = performance.now();
+  let useAudio = false;
+  audio.play().then(() => { useAudio = true; }).catch(() => {});
+  const tick = () => {
+    const t = useAudio ? audio.currentTime : (performance.now() - t0) / 1000;
+    renderAt(Math.min(t, TL.DURATION));
+    if (t < TL.DURATION) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+};
+</script>
+</body>
+</html>
