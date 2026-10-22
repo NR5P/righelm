@@ -328,17 +328,17 @@ fn meters_block(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
         peak: None,
     }
     .show(ui, w);
-    if tx {
-        let alc = get(Meter::Alc) as f32 / 255.0;
-        widgets::Meter { label: "ALC", fraction: alc, text: format!("{:.0}%", alc * 100.0), color: CYAN, ticks: &[], red_from: Some(0.5), peak: None }
-            .show(ui, w);
-        let comp = get(Meter::Comp) as f32 / 255.0;
-        widgets::Meter { label: "COMP", fraction: comp, text: format!("{:.0} dB", comp * 30.0), color: CYAN, ticks: &[], red_from: None, peak: None }
-            .show(ui, w);
-        let id = interpolate(&types::ID_CAL, get(Meter::Id));
-        widgets::Meter { label: "ID", fraction: id / 25.0, text: format!("{id:.1} A"), color: CYAN, ticks: &[], red_from: None, peak: None }
-            .show(ui, w);
-    }
+    // Always shown (blank on receive) so the buttons below never move when keying.
+    let txt = |t: String| if tx { t } else { "—".into() };
+    let alc = if tx { get(Meter::Alc) as f32 / 255.0 } else { 0.0 };
+    widgets::Meter { label: "ALC", fraction: alc, text: txt(format!("{:.0}%", alc * 100.0)), color: CYAN, ticks: &[], red_from: Some(0.5), peak: None }
+        .show(ui, w);
+    let comp = if tx { get(Meter::Comp) as f32 / 255.0 } else { 0.0 };
+    widgets::Meter { label: "COMP", fraction: comp, text: txt(format!("{:.0} dB", comp * 30.0)), color: CYAN, ticks: &[], red_from: None, peak: None }
+        .show(ui, w);
+    let id = if tx { interpolate(&types::ID_CAL, get(Meter::Id)) } else { 0.0 };
+    widgets::Meter { label: "ID", fraction: id / 25.0, text: txt(format!("{id:.1} A")), color: CYAN, ticks: &[], red_from: None, peak: None }
+        .show(ui, w);
     let vdd = interpolate(&types::VDD_CAL, get(Meter::Vdd));
     if s.meter(Meter::Vdd).is_some() {
         ui.label(RichText::new(format!("VDD {vdd:.1} V   ·   meter calibration is approximate")).weak().size(11.0));
