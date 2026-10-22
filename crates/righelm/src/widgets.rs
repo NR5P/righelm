@@ -65,28 +65,16 @@ pub fn freq_display(ui: &mut Ui, hz: u64, size: f32, color: Color32, step: i64, 
         painter.text(Pos2::new(x, rect.center().y), Align2::LEFT_CENTER, c, font.clone(), col);
         x += char_w;
     }
+    // Claim the scroll even when locked, so the page never scrolls under it.
+    let ticks = wheel_ticks(ui, &response);
     if !enabled {
         return FreqAction::None;
     }
     if response.double_clicked() {
         return FreqAction::Edit;
     }
-    if response.hovered() {
-        let scroll = ui.input(|i| i.smooth_scroll_delta.y + i.smooth_scroll_delta.x);
-        let ticks = ui.input(|i| {
-            i.events.iter().filter_map(|e| match e {
-                egui::Event::MouseWheel { delta, .. } => Some(delta.y.signum() as i64),
-                _ => None,
-            }).sum::<i64>()
-        });
-        let unit = hover.unwrap_or(step);
-        if ticks != 0 {
-            return FreqAction::Step(ticks * unit);
-        }
-        if scroll.abs() > 0.5 && ticks == 0 {
-            // Touchpads: no wheel events, only smooth deltas.
-            return FreqAction::Step((scroll / 30.0).round() as i64 * unit);
-        }
+    if ticks != 0 {
+        return FreqAction::Step(ticks * hover.unwrap_or(step));
     }
     // Drag horizontally to tune by the step size.
     if response.dragged() {
@@ -96,6 +84,65 @@ pub fn freq_display(ui: &mut Ui, hz: u64, size: f32, color: Color32, step: i64, 
         }
     }
     FreqAction::None
+}
+
+/// Stop the page from scrolling while the pointer is over `response`.
+pub fn claim_scroll(ui: &Ui, response: &egui::Response) {
+    if response.hovered() {
+        ui.ctx().input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
+    }
+}
+
+/// Wheel/trackpad events over `response`, one step each (the tuning feel),
+/// claimed so the page doesn't scroll as well.
+pub fn wheel_ticks(ui: &Ui, response: &egui::Response) -> i64 {
+    if !response.hovered() {
+        return 0;
+    }
+    let ticks = ui.input(|i| {
+        i.events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::MouseWheel { delta, .. } => {
+                    let d = delta.y + delta.x;
+                    (d != 0.0).then_some(d.signum() as i64)
+                }
+                _ => None,
+            })
+            .sum::<i64>()
+    });
+    claim_scroll(ui, response);
+    ticks
+}
+
+/// Scroll over `response` as whole steps: a mouse-wheel notch is one step,
+/// trackpad movement adds up (`points_per_step`) so one swipe doesn't jump
+/// a slider end to end. Claimed so the page doesn't scroll as well.
+pub fn scroll_steps(ui: &Ui, response: &egui::Response, points_per_step: f32) -> i64 {
+    if !response.hovered() {
+        return 0;
+    }
+    let id = response.id.with("scroll_steps");
+    let mut acc: f32 = ui.data(|d| d.get_temp(id).unwrap_or(0.0));
+    let mut steps = 0i64;
+    ui.input(|i| {
+        for e in &i.events {
+            if let egui::Event::MouseWheel { unit, delta, .. } = e {
+                let d = delta.y + delta.x;
+                match unit {
+                    egui::MouseWheelUnit::Point => acc += d,
+                    egui::MouseWheelUnit::Line => acc += d * points_per_step,
+                    egui::MouseWheelUnit::Page => steps += d.signum() as i64,
+                }
+            }
+        }
+    });
+    let whole = (acc / points_per_step).trunc();
+    steps += whole as i64;
+    acc -= whole * points_per_step;
+    ui.data_mut(|d| d.insert_temp(id, acc));
+    claim_scroll(ui, response);
+    steps
 }
 
 pub fn format_freq(hz: u64) -> String {
@@ -204,6 +251,45 @@ pub fn button(ui: &mut Ui, label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Run frames with `events`, pointer over a 200x50 control at the top
+    /// left; returns (wheel_ticks, scroll_steps, page scroll left over).
+    fn scroll_frame(ctx: &egui::Context, events: Vec<egui::Event>) -> (i64, i64, Vec2) {
+        let mut evs = vec![egui::Event::PointerMoved(Pos2::new(50.0, 20.0))];
+        evs.extend(events);
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0))),
+            events: evs,
+            ..Default::default()
+        };
+        let mut out = (0, 0, Vec2::ZERO);
+        let mut full = ctx.run_ui(input, |ui| {
+            let (_, r1) = ui.allocate_exact_size(Vec2::new(200.0, 25.0), Sense::hover());
+            let ticks = wheel_ticks(ui, &r1);
+            let (_, r2) = ui.allocate_exact_size(Vec2::new(200.0, 25.0), Sense::hover());
+            let steps = scroll_steps(ui, &r2, 12.0);
+            out = (ticks, steps, ui.input(|i| i.smooth_scroll_delta));
+        });
+        full.textures_delta.clear(); // no renderer in tests
+        out
+    }
+
+    fn wheel(unit: egui::MouseWheelUnit, x: f32, y: f32) -> egui::Event {
+        egui::Event::MouseWheel { unit, delta: Vec2::new(x, y), phase: egui::TouchPhase::Move, source: egui::MouseWheelSource::Unknown, modifiers: Default::default() }
+    }
+
+    #[test]
+    fn scrolling_over_a_control_adjusts_it_and_not_the_page() {
+        let ctx = egui::Context::default();
+        let _ = scroll_frame(&ctx, vec![]); // let egui learn the layout
+        // Two mouse-wheel notches up over the first control.
+        let (ticks, _, page) = scroll_frame(&ctx, vec![wheel(egui::MouseWheelUnit::Line, 0.0, 1.0), wheel(egui::MouseWheelUnit::Line, 0.0, 1.0)]);
+        assert_eq!(ticks, 2);
+        assert_eq!(page, Vec2::ZERO, "the page must not scroll");
+        // A sideways trackpad swipe left tunes down, not up.
+        let (ticks, _, _) = scroll_frame(&ctx, vec![wheel(egui::MouseWheelUnit::Point, -3.0, 0.0)]);
+        assert_eq!(ticks, -1);
+    }
 
     #[test]
     fn freq_parsing() {

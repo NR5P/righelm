@@ -51,6 +51,8 @@ pub struct UiPrefs {
     pub wf_floor_db: i32,
     pub wf_range_db: i32,
     pub wf_height: u32,
+    /// The user confirmed the firewall lets LAN remote through.
+    pub firewall_ok: bool,
 }
 
 impl Default for UiPrefs {
@@ -66,6 +68,7 @@ impl Default for UiPrefs {
             wf_floor_db: -110,
             wf_range_db: 60,
             wf_height: 180,
+            firewall_ok: false,
         }
     }
 }

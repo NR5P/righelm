@@ -12,7 +12,12 @@ for n in 32 48 64 128 256 512; do
 done
 mkdir -p "$HOME/.local/share/icons/hicolor/scalable/apps"
 install -m 644 assets/righelm.svg "$HOME/.local/share/icons/hicolor/scalable/apps/righelm.svg"
-sed "s|^Exec=righelm|Exec=$HOME/.local/bin/righelm|" packaging/righelm.desktop > "$HOME/.local/share/applications/righelm.desktop"
+# Absolute paths: the launcher works even if ~/.local/bin isn't on the
+# desktop's PATH or the icon theme cache is stale.
+sed -e "s|^Exec=righelm|Exec=$HOME/.local/bin/righelm|" \
+    -e "s|^Icon=righelm|Icon=$HOME/.local/share/icons/hicolor/256x256/apps/righelm.png|" \
+    packaging/righelm.desktop > "$HOME/.local/share/applications/righelm.desktop"
 update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
-gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+# -t: the per-user hicolor directory usually has no index.theme.
+gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 echo "Installed RigHelm to ~/.local (binaries in ~/.local/bin)."

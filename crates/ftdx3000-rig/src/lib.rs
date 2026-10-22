@@ -18,3 +18,4 @@ pub use services::{Config, Macro, Services, UiPrefs};
 pub mod audio;
 pub mod remote;
 pub mod spectrum;
+pub mod firewall;

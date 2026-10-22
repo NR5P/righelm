@@ -381,10 +381,18 @@ fn bands_and_modes(ui: &mut Ui, rig: &Rig, s: &RadioState) {
 }
 
 /// A slider bound to a radio value: sends `fmt(v)` whenever it moves.
+/// A slider bound to a radio value: sends `fmt(v)` whenever it moves.
+/// Scrolling over it (wheel or trackpad) adjusts it too, in about 1% steps.
 fn slider(ui: &mut Ui, rig: &Rig, label: &str, value: i32, range: std::ops::RangeInclusive<i32>, fmt: impl Fn(i32) -> String) {
     let mut v = value;
+    let (lo, hi) = (*range.start(), *range.end());
     ui.label(label);
-    if ui.add(Slider::new(&mut v, range)).changed() {
+    let r = ui.add(Slider::new(&mut v, range));
+    let steps = widgets::scroll_steps(ui, &r, 12.0);
+    if steps != 0 {
+        let inc = ((hi - lo) / 100).max(1);
+        rig.send(fmt((value + steps as i32 * inc).clamp(lo, hi)));
+    } else if r.changed() {
         rig.send(fmt(v));
     }
     ui.end_row();
@@ -452,8 +460,12 @@ fn filter_strip(ui: &mut Ui, rig: &Rig, s: &RadioState) {
                 if button(ui, "−") && pos > 0 {
                     set(all[pos - 1]);
                 }
+                let was = pos;
                 let r = ui.add_sized([220.0, 20.0], Slider::new(&mut pos, 0..=all.len().saturating_sub(1)).show_value(false));
-                if r.changed() {
+                let steps = widgets::scroll_steps(ui, &r, 16.0);
+                if steps != 0 {
+                    set(all[(was as i64 + steps).clamp(0, all.len() as i64 - 1) as usize]);
+                } else if r.changed() {
                     set(all[pos]);
                 }
                 if button(ui, "+") && pos + 1 < all.len() {
@@ -466,7 +478,12 @@ fn filter_strip(ui: &mut Ui, rig: &Rig, s: &RadioState) {
             ui.separator();
             ui.label("IF shift");
             let mut shift = s.if_shift;
-            if ui.add_sized([160.0, 20.0], Slider::new(&mut shift, -1000..=1000).step_by(20.0).show_value(false)).changed() {
+            let r = ui.add_sized([160.0, 20.0], Slider::new(&mut shift, -1000..=1000).step_by(20.0).show_value(false));
+            let steps = widgets::scroll_steps(ui, &r, 12.0);
+            if steps != 0 {
+                shift = (s.if_shift + steps as i32 * 20).clamp(-1000, 1000);
+            }
+            if steps != 0 || r.changed() {
                 rig.send(format!("IS0{}{:04};", if shift < 0 { '-' } else { '+' }, shift.abs()));
             }
             ui.label(RichText::new(format!("{:+5} Hz", s.if_shift)).monospace());
@@ -582,7 +599,12 @@ fn dsp_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
                     rig.send(format!("NR0{};", (!s.nr) as u8));
                 }
                 let mut lvl = s.nr_level.max(1) as i32;
-                if ui.add(Slider::new(&mut lvl, 1..=15)).changed() {
+                let r = ui.add(Slider::new(&mut lvl, 1..=15));
+                let steps = widgets::scroll_steps(ui, &r, 16.0);
+                if steps != 0 {
+                    lvl = (s.nr_level.max(1) as i32 + steps as i32).clamp(1, 15);
+                }
+                if steps != 0 || r.changed() {
                     rig.send(format!("RL0{lvl:02};"));
                 }
             });

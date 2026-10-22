@@ -118,6 +118,9 @@ impl App {
         let wait = if *idx == 0 { Duration::from_secs(4) } else { Duration::from_millis(900) };
         if *idx > 0 && *idx <= SCREENSHOT_TABS.len() {
             self.tab = SCREENSHOT_TABS[*idx - 1].0;
+            if self.tab == Tab::Remote && std::env::var_os("RIGHELM_FIREWALL_TEST").is_some() {
+                remote_tab::show_firewall_help(&mut self.remote);
+            }
         }
         if at.elapsed() < wait {
             ctx.request_repaint();

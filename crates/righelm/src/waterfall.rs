@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use crossbeam_channel::Receiver;
 use eframe::egui::{self, Align2, Color32, ColorImage, FontId, Pos2, Rect, RichText, Sense, Shape, Stroke, TextureHandle, TextureOptions, Ui, vec2};
-use ftdx3000_cat::types::{Mode, WidthClass};
+use ftdx3000_cat::types::{FREQ_MAX, FREQ_MIN, Mode, WidthClass};
 use ftdx3000_cat::{RadioState, set_freq_cmd};
 use ftdx3000_rig::spectrum::Spectrum;
 use ftdx3000_rig::{Rig, UiPrefs};
@@ -195,6 +195,7 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
     let source = app.services.rx_audio_status();
     let wf = &mut app.waterfall;
     let prefs = &mut app.services.config.ui;
+    let tune_step = prefs.tune_step;
     wf.ingest(ui.ctx(), tap_rate, prefs, passband(s));
 
     egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -216,8 +217,12 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
             }
             ui.separator();
             ui.checkbox(&mut prefs.wf_auto, "Auto level");
-            ui.add_enabled(!prefs.wf_auto, egui::Slider::new(&mut prefs.wf_floor_db, -140..=-40).text("floor dB"));
-            ui.add(egui::Slider::new(&mut prefs.wf_range_db, 20..=120).text("contrast").show_value(false));
+            let r = ui.add_enabled(!prefs.wf_auto, egui::Slider::new(&mut prefs.wf_floor_db, -140..=-40).text("floor dB"));
+            if !prefs.wf_auto {
+                prefs.wf_floor_db = (prefs.wf_floor_db + widgets::scroll_steps(ui, &r, 12.0) as i32).clamp(-140, -40);
+            }
+            let r = ui.add(egui::Slider::new(&mut prefs.wf_range_db, 20..=120).text("contrast").show_value(false));
+            prefs.wf_range_db = (prefs.wf_range_db + widgets::scroll_steps(ui, &r, 12.0) as i32).clamp(20, 120);
             let stale = wf.last_audio.is_none_or(|t| t.elapsed().as_secs_f32() > 1.0);
             if stale {
                 ui.label(RichText::new(format!("no audio — {}", source.as_deref().unwrap_or("starting…"))).color(AMBER));
@@ -307,6 +312,14 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
             p.rect_filled(galley_rect.expand(3.0), 3.0, Color32::from_black_alpha(160));
             p.text(at, anchor, &text, FontId::monospace(13.0), Color32::WHITE);
         }
+        // Scroll over the waterfall tunes, like the frequency display.
+        let ticks = widgets::wheel_ticks(ui, &resp);
+        if ticks != 0 {
+            if let Some((dial, _)) = rx_vfo(s) {
+                let hz = (dial as i64 + ticks * tune_step).clamp(FREQ_MIN as i64, FREQ_MAX as i64) as u64;
+                rig.send(set_freq_cmd(s.rx_on_b(), hz));
+            }
+        }
         if resp.clicked() {
             if let (Some(pos), Some((dial, mode))) = (resp.interact_pointer_pos(), rx_vfo(s)) {
                 if mode.is_cw() {
@@ -318,7 +331,7 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
             }
         }
         if mode.is_some_and(Mode::is_cw) {
-            resp.on_hover_text("Click a signal to tune onto it (zero-beat at your CW pitch)");
+            resp.on_hover_text("Click a signal to tune onto it (zero-beat at your CW pitch) · scroll to tune");
         }
     });
 }

@@ -327,6 +327,8 @@ pub struct ServerStatus {
 pub struct RemoteServer {
     pub addr: SocketAddr,
     stop: Arc<AtomicBool>,
+    /// Held by every background thread; when only ours is left they're gone.
+    alive: Arc<()>,
     status: Arc<Mutex<ServerStatus>>,
 }
 
@@ -338,6 +340,7 @@ impl RemoteServer {
         let udp = UdpSocket::bind(addr)?;
         udp.set_read_timeout(Some(Duration::from_millis(200)))?;
         let stop = Arc::new(AtomicBool::new(false));
+        let alive = Arc::new(());
         let status = Arc::new(Mutex::new(ServerStatus::default()));
         let sessions: Arc<Mutex<HashMap<u64, AudioSession>>> = Arc::new(Mutex::new(HashMap::new()));
         if cfg.password.is_empty() {
@@ -349,7 +352,9 @@ impl RemoteServer {
         {
             let (rig, cfg, stop) = (rig.clone(), cfg.clone(), stop.clone());
             let sock = discovery_socket(DISCOVERY_PORT).or_else(|_| discovery_socket(0))?;
+            let alive_guard = alive.clone();
             thread::Builder::new().name("remote-beacon".into()).spawn(move || {
+                let _alive_guard = alive_guard;
                 let mut last = Instant::now() - Duration::from_secs(10);
                 let mut buf = [0u8; 256];
                 while !stop.load(Ordering::Relaxed) {
@@ -378,7 +383,9 @@ impl RemoteServer {
         {
             let gate = Arc::new(Gate::default());
             let (rig, cfg, stop, status, sessions) = (rig.clone(), cfg.clone(), stop.clone(), status.clone(), sessions.clone());
+            let alive_guard = alive.clone();
             thread::Builder::new().name("remote-accept".into()).spawn(move || {
+                let _alive_guard = alive_guard;
                 while !stop.load(Ordering::Relaxed) {
                     match listener.accept() {
                         Ok((stream, peer)) => {
@@ -405,7 +412,9 @@ impl RemoteServer {
             let tx_dev = cfg.tx_device.clone().or(default_tx).unwrap_or_default();
             {
                 let (udp, stop, sessions, rig, cfg, status) = (udp.clone(), stop.clone(), sessions.clone(), rig.clone(), cfg.clone(), status.clone());
+                let alive_guard = alive.clone();
                 thread::Builder::new().name("remote-udp-in".into()).spawn(move || {
+                    let _alive_guard = alive_guard;
                     let mut buf = [0u8; 4096];
                     let mut tx_play: Option<(Playback, Instant)> = None;
                     while !stop.load(Ordering::Relaxed) {
@@ -442,7 +451,9 @@ impl RemoteServer {
             }
             {
                 let (stop, sessions, status) = (stop.clone(), sessions.clone(), status.clone());
+                let alive_guard = alive.clone();
                 thread::Builder::new().name("remote-udp-out".into()).spawn(move || {
+                    let _alive_guard = alive_guard;
                     let mut capture: Option<Capture> = None;
                     let mut seq: u32 = 0;
                     // Never send faster than real time, whatever the device does.
@@ -492,7 +503,7 @@ impl RemoteServer {
                 })?;
             }
         }
-        Ok(RemoteServer { addr, stop, status })
+        Ok(RemoteServer { addr, stop, alive, status })
     }
 
     pub fn status(&self) -> ServerStatus {
@@ -501,8 +512,14 @@ impl RemoteServer {
 }
 
 impl Drop for RemoteServer {
+    /// Stops the server and waits for its threads to let go of the ports,
+    /// so it can be restarted on the same port straight away.
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        let t0 = Instant::now();
+        while Arc::strong_count(&self.alive) > 1 && t0.elapsed() < Duration::from_secs(2) {
+            thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 
@@ -929,6 +946,18 @@ mod tests {
     use super::*;
     use crate::engine::EngineConfig;
     use crate::sim::SimRadio;
+
+    #[test]
+    fn restarts_on_the_same_port_immediately() {
+        let rig = Rig::start();
+        let cfg = RemoteServerConfig { bind: "127.0.0.1:0".into(), audio: true, rx_device: Some(AudioDevice::Alsa("null".into())), ..Default::default() };
+        let first = RemoteServer::start(rig.clone(), cfg.clone(), None, None).unwrap();
+        let addr = first.addr;
+        drop(first);
+        let again = RemoteServer::start(rig.clone(), RemoteServerConfig { bind: addr.to_string(), ..cfg }, None, None);
+        assert!(again.is_ok(), "{:?}", again.err());
+        rig.shutdown();
+    }
 
     #[test]
     fn beacon_round_trip() {

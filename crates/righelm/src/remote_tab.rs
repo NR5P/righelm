@@ -5,7 +5,12 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, ComboBox, RichText, Slider, Ui};
 use ftdx3000_rig::audio::AudioDevice;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
 use ftdx3000_rig::audio::DeviceEntry;
+use ftdx3000_rig::firewall::{self, FirewallHelp, Role};
+use ftdx3000_rig::remote::RemoteServerConfig;
 use ftdx3000_rig::remote::{DEFAULT_PORT, RemoteTarget, local_addresses};
 
 use crate::App;
@@ -17,11 +22,29 @@ pub struct RemoteState {
     show_password: bool,
     nodes: Vec<DeviceEntry>,
     nodes_at: Option<Instant>,
+    /// Server settings being edited (applied with the Apply button).
+    server_edit: Option<RemoteServerConfig>,
+    /// Firewall advice for (server, client), refreshed now and then.
+    fw: Option<(Instant, Option<FirewallHelp>, Option<FirewallHelp>)>,
+    fw_popup: Option<Role>,
+    fw_running: Arc<AtomicBool>,
+    fw_result: Arc<Mutex<Option<Result<(), String>>>>,
 }
 
 impl Default for RemoteState {
     fn default() -> Self {
-        Self { addr: String::new(), password: String::new(), show_password: false, nodes: Vec::new(), nodes_at: None }
+        Self {
+            addr: String::new(),
+            password: String::new(),
+            show_password: false,
+            nodes: Vec::new(),
+            nodes_at: None,
+            server_edit: None,
+            fw: None,
+            fw_popup: None,
+            fw_running: Arc::new(AtomicBool::new(false)),
+            fw_result: Arc::new(Mutex::new(None)),
+        }
     }
 }
 
@@ -61,10 +84,120 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             }
         }
     }
+    if app.remote.fw.as_ref().is_none_or(|(t, _, _)| t.elapsed() > Duration::from_secs(15)) {
+        app.remote.fw = Some((Instant::now(), firewall::check(Role::Server), firewall::check(Role::Client)));
+    }
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         client_section(app, ui);
         server_section(app, ui);
     });
+    firewall_window(app, ui);
+}
+
+/// Open the firewall instructions (screenshot self-test).
+pub fn show_firewall_help(state: &mut RemoteState) {
+    state.fw = Some((Instant::now(), firewall::check(Role::Server), firewall::check(Role::Client)));
+    state.fw_popup = Some(Role::Server);
+}
+
+/// The firewall advice for a role, if a firewall needs action.
+fn fw_help(app: &App, role: Role) -> Option<FirewallHelp> {
+    let (_, server, client) = app.remote.fw.as_ref()?;
+    if role == Role::Server { server.clone() } else { client.clone() }
+}
+
+/// A one-line firewall status with a button to the instructions.
+fn firewall_line(app: &mut App, ui: &mut Ui, role: Role) {
+    let Some(help) = fw_help(app, role) else { return };
+    ui.horizontal_wrapped(|ui| {
+        if help.commands.is_empty() {
+            ui.label(RichText::new(&help.note).weak());
+        } else if app.services.config.ui.firewall_ok {
+            ui.label(RichText::new(format!("✔ {} ports opened", help.firewall)).color(GREEN));
+            if ui.small_button("Show again").clicked() {
+                app.remote.fw_popup = Some(role);
+            }
+        } else {
+            ui.label(RichText::new(format!("⚠ {}", help.note)).color(AMBER));
+            if ui.button("Show me how").clicked() {
+                app.remote.fw_popup = Some(role);
+            }
+        }
+    });
+}
+
+fn firewall_window(app: &mut App, ui: &mut Ui) {
+    let Some(role) = app.remote.fw_popup else { return };
+    let Some(help) = fw_help(app, role) else {
+        app.remote.fw_popup = None;
+        return;
+    };
+    let mut open = true;
+    let mut close = false;
+    egui::Window::new("Open the firewall for RigHelm").collapsible(false).resizable(false).open(&mut open).show(ui.ctx(), |ui| {
+        ui.label(&help.note);
+        ui.add_space(6.0);
+        if !help.commands.is_empty() {
+            ui.label("Run these in a terminal (they ask for your password):");
+            for c in &help.commands {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(c).monospace().color(CYAN));
+                    if ui.small_button("Copy").clicked() {
+                        ui.ctx().copy_text(c.clone());
+                    }
+                });
+            }
+            ui.add_space(6.0);
+            let running = app.remote.fw_running.load(Ordering::Relaxed);
+            if help.can_open() {
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(!running, egui::Button::new(RichText::new("Open the ports for me").strong())).on_hover_text("Runs the commands above; your desktop asks for your password").clicked() {
+                        app.remote.fw_running.store(true, Ordering::Relaxed);
+                        *app.remote.fw_result.lock().unwrap() = None;
+                        let (running, result, help, ctx) = (app.remote.fw_running.clone(), app.remote.fw_result.clone(), help.clone(), ui.ctx().clone());
+                        std::thread::spawn(move || {
+                            let r = help.open_ports();
+                            *result.lock().unwrap() = Some(r);
+                            running.store(false, Ordering::Relaxed);
+                            ctx.request_repaint();
+                        });
+                    }
+                    if running {
+                        ui.spinner();
+                        ui.label("waiting for your password…");
+                    }
+                });
+            }
+            let result = app.remote.fw_result.lock().unwrap().clone();
+            match result {
+                Some(Ok(())) => {
+                    ui.label(RichText::new("✔ Ports opened.").color(GREEN));
+                    if !app.services.config.ui.firewall_ok {
+                        app.services.config.ui.firewall_ok = true;
+                        let _ = app.services.config.save();
+                    }
+                }
+                Some(Err(e)) => {
+                    ui.label(RichText::new(format!("Didn't work: {e}")).color(RED));
+                }
+                None => {}
+            }
+        }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if !help.commands.is_empty() && ui.button("I've done this").clicked() {
+                app.services.config.ui.firewall_ok = true;
+                let _ = app.services.config.save();
+                close = true;
+            }
+            if ui.button("Close").clicked() {
+                close = true;
+            }
+        });
+    });
+    if !open || close {
+        app.remote.fw_popup = None;
+    }
 }
 
 fn client_section(app: &mut App, ui: &mut Ui) {
@@ -87,6 +220,7 @@ fn client_section(app: &mut App, ui: &mut Ui) {
         let found = app.services.discovery.as_ref().map(|d| d.servers()).unwrap_or_default();
         if found.is_empty() {
             ui.label(RichText::new("  none yet — start this program on the computer with the radio and enable \"Let other computers use this radio\" below").color(DIM));
+            firewall_line(app, ui, Role::Client);
         }
         egui::Grid::new("found").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
             for f in &found {
@@ -186,8 +320,8 @@ fn server_section(app: &mut App, ui: &mut Ui) {
             ui.label(RichText::new("Not available while this program is controlling a remote radio.").color(DIM));
             return;
         }
-        let cfg = &mut app.services.config.remote_server;
-        let before = cfg.clone();
+        let show_password = app.remote.show_password;
+        let cfg = app.remote.server_edit.get_or_insert_with(|| app.services.config.remote_server.clone());
         egui::Grid::new("server").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
             ui.label("Server");
             ui.checkbox(&mut cfg.enabled, "Allow remote control from my network");
@@ -197,7 +331,7 @@ fn server_section(app: &mut App, ui: &mut Ui) {
             ui.end_row();
             ui.label("Password");
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut cfg.password).password(!app.remote.show_password).desired_width(200.0));
+                ui.add(egui::TextEdit::singleline(&mut cfg.password).password(!show_password).desired_width(200.0));
                 if cfg.password.is_empty() {
                     ui.label(RichText::new("no password: remote users can listen and tune, but never transmit").color(AMBER));
                 }
@@ -214,10 +348,29 @@ fn server_section(app: &mut App, ui: &mut Ui) {
             ui.add(egui::TextEdit::singleline(&mut cfg.bind).desired_width(200.0));
             ui.end_row();
         });
-        let changed = *cfg != before;
-        if changed {
-            app.services.apply_remote_server();
-            let _ = app.services.config.save();
+        let edited = cfg.clone();
+        let dirty = edited != app.services.config.remote_server;
+        ui.horizontal(|ui| {
+            if ui.add_enabled(dirty, egui::Button::new(RichText::new("Apply").strong())).clicked() {
+                let was_enabled = app.services.config.remote_server.enabled;
+                app.services.config.remote_server = edited.clone();
+                app.services.apply_remote_server();
+                let _ = app.services.config.save();
+                // Turning the server on behind a firewall: say what to do.
+                let needs_help = fw_help(app, Role::Server).is_some_and(|h| !h.commands.is_empty());
+                if edited.enabled && !was_enabled && needs_help && !app.services.config.ui.firewall_ok {
+                    app.remote.fw_popup = Some(Role::Server);
+                }
+            }
+            if dirty {
+                if ui.button("Revert").clicked() {
+                    app.remote.server_edit = None;
+                }
+                ui.label(RichText::new("changes not applied yet").color(AMBER));
+            }
+        });
+        if app.services.config.remote_server.enabled {
+            firewall_line(app, ui, Role::Server);
         }
         match status {
             Some(Ok((addr, st))) => {
