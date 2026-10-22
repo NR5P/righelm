@@ -59,7 +59,7 @@ jobs:
         run: |
           dir="righelm-$TAG-${{ matrix.name }}"
           mkdir -p "$dir/assets"
-          cp "$BIN/righelm" "$BIN/righelmd" "$BIN/righelm-sim" README.md "$dir/"
+          cp "$BIN/righelm" "$BIN/righelmd" "$BIN/righelm-sim" README.md LICENSE "$dir/"
           cp assets/righelm-*.png assets/righelm.svg "$dir/assets/"
           if [ "$RUNNER_OS" = Linux ]; then cp packaging/righelm.desktop "$dir/"; fi
           tar czf "$dir.tar.gz" "$dir"
