@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/ftdx3000-cat", "crates/ftdx3000-rig", "crates/ferrite"]
+members = ["crates/ftdx3000-cat", "crates/ftdx3000-rig", "crates/righelm"]
 
 [workspace.package]
 version = "0.1.0"

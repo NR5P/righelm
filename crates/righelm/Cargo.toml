@@ -1,6 +1,6 @@
 [package]
-name = "ferrite"
-description = "Ferrite — rig control for the Yaesu FTDX3000"
+name = "righelm"
+description = "RigHelm — the Linux alternative to Win4Yaesu for the Yaesu FTDX3000"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,7 +1,7 @@
 //! Run the built-in FTDX3000 simulator on a PTY, so any program (including
 //! this project's own app) can be tested without a radio.
 //!
-//!     ferrite-sim [LINK_PATH]     (default: $XDG_RUNTIME_DIR/ftdx3000/sim)
+//!     righelm-sim [LINK_PATH]     (default: $XDG_RUNTIME_DIR/ftdx3000/sim)
 
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};

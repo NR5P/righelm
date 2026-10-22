@@ -1,7 +1,7 @@
 //! Headless rig server: owns the radio's CAT port and shares it through
 //! virtual serial ports and a rigctld-compatible TCP server.
 //!
-//!     ferrited [--port PATH] [--baud N] [--no-rigctld] [--detect]
+//!     righelmd [--port PATH] [--baud N] [--no-rigctld] [--detect]
 //!
 //! Uses the same config file as the GUI (~/.config/ftdx3000/config.toml).
 
@@ -44,7 +44,7 @@ fn main() {
                 return;
             }
             "-h" | "--help" => {
-                println!("ferrited [--port PATH] [--baud N] [--rigctld ADDR:PORT | --no-rigctld] [--no-menu] [--detect]");
+                println!("righelmd [--port PATH] [--baud N] [--rigctld ADDR:PORT | --no-rigctld] [--no-menu] [--detect]");
                 return;
             }
             other => {

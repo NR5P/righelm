@@ -28,9 +28,9 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.add(egui::Image::new(&app.logo).fit_to_exact_size(egui::vec2(96.0, 96.0)));
             ui.vertical(|ui| {
-                ui.label(RichText::new("Ferrite").strong().size(28.0).color(AMBER));
-                ui.label(RichText::new(format!("Rig control for the Yaesu FTDX3000 · version {}", env!("CARGO_PKG_VERSION"))).size(14.0));
-                ui.label(RichText::new("Named for the ferrite toroid — the iron-oxide core inside nearly every piece of ham gear, and a nod to Rust.").color(DIM));
+                ui.label(RichText::new("RigHelm").strong().size(28.0).color(AMBER));
+                ui.label(RichText::new(format!("The Linux alternative to Win4Yaesu for the Yaesu FTDX3000 · version {}", env!("CARGO_PKG_VERSION"))).size(14.0));
+                ui.label(RichText::new("At the helm of your rig: control, sharing and remote operation.").color(DIM));
                 ui.label(RichText::new(format!("Settings file: {}", ftdx3000_rig::Config::path().display())).color(DIM));
             });
         });

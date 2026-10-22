@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=RigHelm
+GenericName=Rig Control
+Comment=Linux alternative to Win4Yaesu: control and share a Yaesu FTDX3000
+Keywords=ham;radio;rig;CAT;Yaesu;FTDX3000;Win4Yaesu;Lin4Yaesu;Hamlib;rigctld;transceiver;
+Exec=righelm
+Icon=righelm
+Terminal=false
+Categories=HamRadio;Utility;
+StartupWMClass=righelm

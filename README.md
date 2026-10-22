@@ -1,9 +1,9 @@
-# Ferrite
+# RigHelm
 
-![Ferrite](assets/ferrite-128.png)
+![RigHelm](assets/righelm-128.png)
 
-**Ferrite** is rig control for the Yaesu FTDX3000 on Linux, written in Rust — named for the
-ferrite toroid, the iron-oxide core inside nearly every piece of ham gear.
+**RigHelm** — the Linux alternative to Win4Yaesu for the Yaesu FTDX3000. Rig control,
+sharing and LAN remote, written in Rust.
 
 It owns the radio's CAT
 port and shares it with any number of other programs, on this computer or across your LAN.
@@ -43,9 +43,9 @@ Binaries in `target/release/`:
 
 | binary          | what                                                         |
 |-----------------|--------------------------------------------------------------|
-| `ferrite`       | the desktop app                                              |
-| `ferrited`      | headless server (same config, no window), `--detect` lists hardware |
-| `ferrite-sim`   | a simulated FTDX3000 on a PTY for testing without the radio  |
+| `righelm`       | the desktop app                                              |
+| `righelmd`      | headless server (same config, no window), `--detect` lists hardware |
+| `righelm-sim`   | a simulated FTDX3000 on a PTY for testing without the radio  |
 
 Your user must be in the `dialout` group to open the radio's serial port.
 
@@ -135,7 +135,7 @@ radio**, set a password, and enable it. On any other computer, start the app and
 ## Testing without the radio
 
 ```bash
-cargo run --release --bin ferrite-sim
+cargo run --release --bin righelm-sim
 ```
 
 Then choose `/run/user/1000/ftdx3000/sim` as the CAT port. The simulator answers every

@@ -1,4 +1,4 @@
-//! Ferrite — rig control for the Yaesu FTDX3000.
+//! RigHelm — the Linux alternative to Win4Yaesu for the Yaesu FTDX3000.
 
 mod console;
 mod memories;
@@ -29,8 +29,8 @@ enum Tab {
     Settings,
 }
 
-/// The app icon (a copper-wound ferrite toroid), embedded.
-pub const ICON_PNG: &[u8] = include_bytes!("../../../assets/ferrite-256.png");
+/// The app icon (a ship's wheel around a VFO knob), embedded.
+pub const ICON_PNG: &[u8] = include_bytes!("../../../assets/righelm-256.png");
 
 /// Something that needs a second click to confirm.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,7 +162,7 @@ impl App {
             };
             ui.label(RichText::new("●").color(dot).size(18.0));
             ui.add(egui::Image::new(&self.logo).fit_to_exact_size(egui::vec2(26.0, 26.0)));
-            ui.label(RichText::new("Ferrite").strong().size(18.0).color(AMBER));
+            ui.label(RichText::new("RigHelm").strong().size(18.0).color(AMBER));
             ui.label(RichText::new("FTDX3000").weak());
             ui.add(egui::Label::new(RichText::new(text).weak()).truncate());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -263,15 +263,15 @@ fn setup_style(ctx: &egui::Context) {
 }
 
 fn main() -> eframe::Result {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,ferrite=info,ftdx3000_rig=info")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,righelm=info,ftdx3000_rig=info")).init();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Ferrite — FTDX3000 Rig Control")
-            .with_app_id("ferrite")
+            .with_title("RigHelm — FTDX3000 Rig Control")
+            .with_app_id("righelm")
             .with_icon(eframe::icon_data::from_png_bytes(ICON_PNG).expect("embedded icon"))
             .with_inner_size([1280.0, 860.0])
             .with_min_inner_size([900.0, 600.0]),
         ..Default::default()
     };
-    eframe::run_native("Ferrite", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+    eframe::run_native("RigHelm", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }

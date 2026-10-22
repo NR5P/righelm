@@ -150,7 +150,7 @@ fn cat_section(app: &mut App, ui: &mut Ui) {
                         }
                     }
                     let sim = pty::default_link_dir().join("sim").to_string_lossy().to_string();
-                    if ui.selectable_label(st.engine.serial.path == sim, format!("{sim}  — simulator (run ferrite-sim)")).clicked() {
+                    if ui.selectable_label(st.engine.serial.path == sim, format!("{sim}  — simulator (run righelm-sim)")).clicked() {
                         st.engine.serial.path = sim;
                     }
                 });
