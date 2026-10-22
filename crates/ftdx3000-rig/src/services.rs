@@ -6,9 +6,11 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::audio::AudioDevice;
+use crate::cw::{CwConfig, CwKeyer, KeyLine, LocalKeyLine, RemoteKeyLine};
 use crate::engine::{EngineConfig, Rig};
 use crate::remote::{AudioClient, Discovery, RemoteClientConfig, RemoteServer, RemoteServerConfig, RemoteTarget};
 use crate::rigctld::{RigctldConfig, RigctldServer};
+use crate::txaudio::{self, MIC_SEL_FRONT, MIC_SEL_MENUS, MIC_SEL_USB, MicBridge, MicStatus, TxAudioConfig};
 use crate::vport::{VirtualPort, VirtualPortConfig, VirtualPortStatus};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -29,6 +31,10 @@ pub struct Config {
     pub remote_client: RemoteClientConfig,
     /// Last remote radio used (address and password), for reconnecting.
     pub last_remote: Option<RemoteTarget>,
+    /// Transmit audio: the radio's microphone or the computer's.
+    pub tx_audio: TxAudioConfig,
+    /// CW keying from this computer (never armed at start-up).
+    pub cw: CwConfig,
     /// Display preferences for the desktop app.
     pub ui: UiPrefs,
 }
@@ -107,6 +113,8 @@ impl Default for Config {
             remote_server: RemoteServerConfig::default(),
             remote_client: RemoteClientConfig::default(),
             last_remote: None,
+            tx_audio: TxAudioConfig::default(),
+            cw: CwConfig::default(),
             ui: UiPrefs::default(),
         }
     }
@@ -126,22 +134,29 @@ impl Config {
     }
 
     pub fn load() -> Config {
-        match std::fs::read_to_string(Self::path()) {
+        let path = Self::path();
+        match std::fs::read_to_string(&path) {
             Ok(text) => toml::from_str(&text).unwrap_or_else(|e| {
-                log::warn!("ignoring invalid config {}: {e}", Self::path().display());
+                // Keep the user's file: the defaults will be saved over it.
+                let bad = path.with_extension("toml.bad");
+                let _ = std::fs::copy(&path, &bad);
+                log::warn!("ignoring invalid config {} (copied to {}): {e}", path.display(), bad.display());
                 Config::default()
             }),
             Err(_) => Config::default(),
         }
     }
 
+    /// Write the file atomically, so a crash mid-write can't truncate it.
     pub fn save(&self) -> std::io::Result<()> {
         let path = Self::path();
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
         let text = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
-        std::fs::write(path, text)
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(&tmp, &path)
     }
 
     pub fn link_dir(&self) -> PathBuf {
@@ -184,6 +199,15 @@ pub struct Services {
     /// The radio's receive audio, local or from the remote server.
     pub rx_tap: crate::spectrum::AudioTap,
     local_rx: Option<crate::spectrum::LocalRxAudio>,
+    /// The computer mic feeding the local radio (`tx_audio.computer_mic`).
+    mic_bridge: Option<(AudioDevice, MicBridge)>,
+    /// The MIC SEL menus were set for the computer mic on this connection.
+    mic_applied: bool,
+    last_mic_refresh: std::time::Instant,
+    /// The armed CW key, if armed.
+    cw: Option<CwKeyer>,
+    /// Why the CW key was last disarmed by itself.
+    pub cw_disarmed: Option<String>,
 }
 
 /// The radio codec's capture and playback devices, if detected.
@@ -204,8 +228,14 @@ impl Services {
             discovery: None,
             rx_tap: Default::default(),
             local_rx: None,
+            mic_bridge: None,
+            mic_applied: false,
+            last_mic_refresh: std::time::Instant::now(),
+            cw: None,
+            cw_disarmed: None,
         };
         s.apply_local_rx();
+        s.apply_tx_audio();
         s.discovery = Discovery::start().map_err(|e| log::warn!("LAN discovery unavailable: {e}")).ok();
         s.apply_sharing();
         let have_target = s.config.engine.remote.is_some() || !s.config.engine.serial.path.is_empty();
@@ -264,8 +294,7 @@ impl Services {
             return;
         }
         self.remote_server = None;
-        let (rx, tx) = radio_audio_devices();
-        let r = RemoteServer::start(self.rig.clone(), want.clone(), rx, tx).map_err(|e| e.to_string());
+        let r = RemoteServer::start(self.rig.clone(), want.clone()).map_err(|e| e.to_string());
         if let Err(e) = &r {
             self.rig.note(format!("remote server on {} failed: {e}", want.bind));
         }
@@ -302,9 +331,154 @@ impl Services {
         }
     }
 
+    /// Talk through the computer's microphone (`true`) or the radio's own.
+    /// Sets the radio's AM/FM/SSB MIC SEL menus to USB, remembering what they
+    /// were, and restores them when switching back.
+    pub fn set_computer_mic(&mut self, on: bool) {
+        self.config.tx_audio.computer_mic = on;
+        if self.rig.link().is_open() {
+            self.apply_mic_sel();
+        } else {
+            self.mic_applied = false;
+        }
+        self.apply_tx_audio();
+        let _ = self.config.save();
+    }
+
+    /// Send the MIC SEL menu values the switch calls for.
+    fn apply_mic_sel(&mut self) {
+        let t = &mut self.config.tx_audio;
+        for menu in MIC_SEL_MENUS {
+            let now = txaudio::mic_sel(&self.rig, menu);
+            let want = if t.computer_mic {
+                // Remember the radio's own setting to go back to.
+                if let Some(v) = now.filter(|&v| v != MIC_SEL_USB) {
+                    t.saved_mic_sel.retain(|(m, _)| *m != menu);
+                    t.saved_mic_sel.push((menu, v));
+                }
+                MIC_SEL_USB
+            } else {
+                t.saved_mic_sel.iter().find(|(m, _)| *m == menu).map(|(_, v)| *v).filter(|&v| v != MIC_SEL_USB).unwrap_or(MIC_SEL_FRONT)
+            };
+            if now != Some(want) {
+                self.rig.send(txaudio::mic_sel_cmd(menu, want));
+            }
+        }
+        if !t.computer_mic {
+            t.saved_mic_sel.clear();
+        }
+        self.mic_applied = true;
+    }
+
+    /// Start, stop or adjust whatever carries the computer mic: the local
+    /// bridge, or the audio stream to a remote radio.
+    pub fn apply_tx_audio(&mut self) {
+        let t = self.config.tx_audio.clone();
+        let remote = self.config.engine.remote.is_some();
+        let rc = &mut self.config.remote_client;
+        (rc.send_mic, rc.mic, rc.mic_gain) = (t.computer_mic, t.mic.clone(), t.mic_gain);
+        self.update_audio_client();
+        if !t.computer_mic || remote {
+            self.mic_bridge = None;
+        } else if let Some((_, b)) = self.mic_bridge.as_ref().filter(|(dev, _)| *dev == t.mic) {
+            b.set_gain(t.mic_gain);
+        } else {
+            self.mic_bridge = Some((t.mic.clone(), MicBridge::start(self.rig.clone(), t.mic.clone(), t.mic_gain)));
+        }
+    }
+
+    /// The local computer-mic bridge's state, when it runs.
+    pub fn mic_status(&self) -> Option<MicStatus> {
+        self.mic_bridge.as_ref().map(|(_, b)| b.status())
+    }
+
+    /// Arm or disarm the CW key. Arming puts the radio in CW with break-in
+    /// (so key-down transmits) and opens the keying line.
+    pub fn cw_arm(&mut self, on: bool) {
+        self.cw = None;
+        if !on {
+            return;
+        }
+        self.cw_disarmed = None;
+        let (cw_mode, break_in, wpm) = {
+            let s = self.rig.state();
+            (s.tx_mode().is_some_and(|m| m.is_cw()), s.break_in, s.key_speed as u32)
+        };
+        if !cw_mode {
+            self.rig.send("MD03;");
+        }
+        if !break_in {
+            self.rig.send("BI1;");
+        }
+        let rig = self.rig.clone();
+        let target = self.config.engine.remote.clone();
+        let open = move || -> Result<Box<dyn KeyLine>, String> {
+            Ok(match target {
+                Some(t) => Box::new(RemoteKeyLine::open(&t)?),
+                None => Box::new(LocalKeyLine::open(&rig, crate::Source::Gui)?),
+            })
+        };
+        self.cw = Some(CwKeyer::start(open, self.config.cw.clone(), if wpm >= 4 { wpm } else { 20 }));
+        self.rig.note("CW key armed");
+    }
+
+    pub fn cw(&self) -> Option<&CwKeyer> {
+        self.cw.as_ref()
+    }
+
+    fn cw_disarm(&mut self, why: &str) {
+        if self.cw.take().is_some() {
+            self.cw_disarmed = Some(why.to_string());
+            self.rig.note(format!("CW key disarmed: {why}"));
+        }
+    }
+
+    /// Call regularly (every frame or so): after a (re)connect, set the
+    /// radio's MIC SEL menus again if the computer mic is on; disarm the CW
+    /// key when it should no longer be live.
+    pub fn tick(&mut self) {
+        if let Some(k) = &self.cw {
+            let st = k.status();
+            let settled = k.armed_at.elapsed() > std::time::Duration::from_secs(3);
+            let s = self.rig.state();
+            let cw_mode = s.tx_mode().is_some_and(|m| m.is_cw());
+            let wpm = s.key_speed as u32;
+            drop(s);
+            if wpm >= 4 {
+                k.set_wpm(wpm);
+            }
+            if let Some(e) = st.error {
+                self.cw = None;
+                self.cw_disarmed = Some(e);
+            } else if !self.rig.link().is_open() {
+                self.cw_disarm("the radio disconnected");
+            } else if settled && !cw_mode {
+                self.cw_disarm("the radio left CW mode");
+            } else if k.idle_for() > crate::cw::IDLE_DISARM {
+                self.cw_disarm("not used for 10 minutes");
+            }
+        }
+        if !matches!(self.rig.link(), crate::LinkState::Connected { .. }) {
+            self.mic_applied = false;
+            return;
+        }
+        if self.mic_applied || !self.config.tx_audio.computer_mic {
+            return;
+        }
+        if MIC_SEL_MENUS.iter().all(|&m| txaudio::mic_sel(&self.rig, m).is_some()) {
+            self.apply_mic_sel();
+            let _ = self.config.save();
+        } else if self.last_mic_refresh.elapsed() > std::time::Duration::from_secs(3) {
+            self.last_mic_refresh = std::time::Instant::now();
+            let cmds: Vec<String> = MIC_SEL_MENUS.iter().map(|&m| ftdx3000_cat::menu::read_cmd(m)).collect();
+            self.rig.refresh(&cmds.iter().map(String::as_str).collect::<Vec<_>>());
+        }
+    }
+
     /// Push changed client audio settings (volume, mic) to the running stream.
     pub fn update_audio_client(&mut self) {
-        let want_audio = self.config.engine.remote.is_some() && self.config.remote_client.audio;
+        let rc = &self.config.remote_client;
+        let want_audio = self.config.engine.remote.is_some() && (rc.audio || rc.send_mic);
         match (&self.audio_client, want_audio) {
             (Some(a), true) => a.update(self.config.remote_client.clone()),
             (None, true) => {
@@ -319,22 +493,25 @@ impl Services {
 
     /// Control a radio on another computer instead of a local one.
     pub fn connect_remote(&mut self, target: RemoteTarget) {
+        self.cw_disarm("switched radios");
         self.config.engine.remote = Some(target.clone());
         self.config.last_remote = Some(target);
         self.audio_client = None;
         self.apply_remote_server();
         self.apply_local_rx();
         self.connect();
-        self.update_audio_client();
+        self.apply_tx_audio();
     }
 
     /// Go back to the locally connected radio.
     pub fn use_local(&mut self) {
+        self.cw_disarm("switched radios");
         self.config.engine.remote = None;
         self.audio_client = None;
         self.rig.disconnect();
         self.apply_remote_server();
         self.apply_local_rx();
+        self.apply_tx_audio();
         if !self.config.engine.serial.path.is_empty() {
             self.connect();
         }
@@ -363,6 +540,8 @@ impl Services {
         self.audio_client = None;
         self.discovery = None;
         self.local_rx = None;
+        self.mic_bridge = None;
+        self.cw = None;
         self.rig.shutdown();
         // Give the engine a moment to un-key and send AI0.
         std::thread::sleep(std::time::Duration::from_millis(150));

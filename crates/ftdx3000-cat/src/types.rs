@@ -127,6 +127,11 @@ impl Mode {
     pub fn is_cw(self) -> bool {
         matches!(self, Mode::Cw | Mode::CwR)
     }
+
+    /// Phone modes, whose transmit audio is a microphone (not DATA/RTTY/CW).
+    pub fn is_voice(self) -> bool {
+        matches!(self, Mode::Lsb | Mode::Usb | Mode::Am | Mode::AmN | Mode::Fm | Mode::FmN)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

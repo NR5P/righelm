@@ -28,7 +28,7 @@ impl Spectrum {
         let fft = FftPlanner::new().plan_fft_forward(size);
         // Hann window, normalised so a full-scale sine reads 0 dBFS.
         let window: Vec<f32> = (0..size).map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / size as f32).cos()).collect();
-        Spectrum { rate, size, fft, window, history: vec![0.0; size], scratch: vec![Complex32::new(0.0, 0.0); size], hop: hop.max(1), since: 0 }
+        Spectrum { rate, size, fft, window, history: vec![0.0; size], scratch: vec![Complex32::new(0.0, 0.0); size], hop: hop.clamp(1, size), since: 0 }
     }
 
     pub fn rate(&self) -> u32 {
@@ -41,7 +41,7 @@ impl Spectrum {
     }
 
     pub fn set_hop(&mut self, hop: usize) {
-        self.hop = hop.max(1);
+        self.hop = hop.clamp(1, self.size);
     }
 
     /// Feed samples; returns every new spectrum line (dBFS per bin,

@@ -14,7 +14,7 @@ mod backend;
 #[path = "audio_cpal.rs"]
 mod backend;
 
-pub use backend::{Capture, Playback, list_devices, radio_devices};
+pub use backend::{Capture, Playback, default_input, list_devices, radio_devices};
 
 /// A speaker or microphone that can be chosen in the UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +50,55 @@ impl std::fmt::Display for AudioDevice {
     }
 }
 
+/// Looks like the radio's own USB codec (a TI PCM2903B, "USB Audio CODEC").
+/// Its input is the radio's receive audio, never a microphone.
+pub fn is_radio_codec(dev: &AudioDevice) -> bool {
+    let n = match dev {
+        AudioDevice::Default => return false,
+        AudioDevice::PipeWire(n) | AudioDevice::Alsa(n) | AudioDevice::Named(n) => n.to_lowercase(),
+    };
+    n.contains("usb_audio_codec") || n.contains("usb audio codec") || n.contains("pcm2903") || n.contains("card=codec")
+}
+
+/// The computer's microphone: `chosen`, or for `Default` the system's
+/// default input unless that is the radio's codec (PipeWire often makes the
+/// radio the default input when it is plugged in), then the first other one.
+pub fn computer_mic(chosen: &AudioDevice) -> Result<AudioDevice, String> {
+    if is_radio_codec(chosen) {
+        return Err("the chosen microphone is the radio's receive audio; pick the computer's microphone".into());
+    }
+    if *chosen != AudioDevice::Default {
+        return Ok(chosen.clone());
+    }
+    // Prefer the computer's built-in microphone over e.g. a dock's jack.
+    let other = || {
+        let mut inputs: Vec<DeviceEntry> = list_devices()
+            .into_iter()
+            .filter(|d| d.input && !is_radio_codec(&d.device) && !is_radio_codec(&AudioDevice::Named(d.label.clone())))
+            .collect();
+        let built_in = |d: &DeviceEntry| {
+            let t = format!("{} {}", d.device, d.label).to_lowercase();
+            t.contains("pci") || t.contains("built-in") || t.contains("internal") || t.contains("macbook")
+        };
+        inputs.sort_by_key(|d| !built_in(d));
+        inputs.into_iter().next().map(|d| d.device)
+    };
+    match default_input() {
+        Some(d) if !is_radio_codec(&d) => Ok(d),
+        Some(_) => other().ok_or_else(|| "no microphone found on this computer (only the radio's audio input)".into()),
+        // The default isn't known: prefer a listed non-radio input.
+        None => Ok(other().unwrap_or(AudioDevice::Default)),
+    }
+}
+
+/// A friendly name for a device (its description where known).
+pub fn describe(dev: &AudioDevice) -> String {
+    match dev {
+        AudioDevice::Default => "system default".into(),
+        AudioDevice::PipeWire(_) => list_devices().into_iter().find(|d| d.device == *dev).map(|d| d.label).unwrap_or_else(|| dev.to_string()),
+        _ => dev.to_string(),
+    }
+}
 
 /// Samples per 20 ms frame.
 pub fn frame_len(rate: u32) -> usize {

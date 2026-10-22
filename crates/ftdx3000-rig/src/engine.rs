@@ -177,6 +177,8 @@ struct Shared {
     /// Incremented whenever the state changes (cheap change detection).
     revision: AtomicU64,
     stats: Mutex<Stats>,
+    /// Who sent the `TX1;`/`MX1;` that is in effect (CAT transmit only).
+    tx_by: Mutex<Option<Source>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -265,7 +267,8 @@ enum Job {
     Connect(EngineConfig),
     ConnectLink(Link, EngineConfig),
     Disconnect,
-    Set { cmd: String, src: Source },
+    /// `at`: when it was queued (commands from before a connection never go out on it).
+    Set { cmd: String, src: Source, at: Instant },
     Read { key: String, cmd: String, fresh: Freshness, src: Source, reply: Option<Reply> },
     Raw { cmd: String, reply: Sender<Vec<String>> },
     Refresh(Vec<String>),
@@ -298,6 +301,7 @@ impl Rig {
             repaint: RwLock::new(None),
             revision: AtomicU64::new(0),
             stats: Mutex::new(Stats::default()),
+            tx_by: Mutex::new(None),
         });
         let (tx, rx) = unbounded();
         let engine = Engine::new(shared.clone(), rx, tx.clone());
@@ -333,6 +337,12 @@ impl Rig {
 
     pub fn state(&self) -> parking_lot::RwLockReadGuard<'_, RadioState> {
         self.shared.state.read()
+    }
+
+    /// Who keyed the radio by CAT (`TX1;`/`MX1;`), if it is CAT-keyed.
+    /// `None` while transmitting means the radio's own PTT, key or VOX.
+    pub fn tx_source(&self) -> Option<Source> {
+        if self.shared.state.read().tx == 1 || self.shared.state.read().mox { self.shared.tx_by.lock().clone() } else { None }
     }
 
     pub fn revision(&self) -> u64 {
@@ -386,7 +396,7 @@ impl Rig {
     pub fn send_from(&self, cmd: impl AsRef<str>, src: Source) {
         let mut f = Framer::new();
         for frame in f.push(cmd.as_ref().as_bytes()) {
-            self.job(Job::Set { cmd: command::normalize(&frame), src: src.clone() });
+            self.job(Job::Set { cmd: command::normalize(&frame), src: src.clone(), at: Instant::now() });
         }
     }
 
@@ -502,6 +512,11 @@ struct Engine {
     /// Sets written since the last answer: a `?;` is theirs before it is
     /// the outstanding read's (the radio answers in order).
     unconfirmed: VecDeque<(String, String, Instant)>,
+    /// The radio may still be keyed by CAT and the un-key could not be
+    /// written: send `TX0;` first thing on the next connection.
+    pending_unkey: bool,
+    /// When the current link was attached.
+    attached_at: Instant,
 }
 
 const POST_WRITE_GAP: Duration = Duration::from_millis(5);
@@ -535,6 +550,8 @@ impl Engine {
             next_reconnect: None,
             raw: Vec::new(),
             cat_keyed: false,
+            pending_unkey: false,
+            attached_at: now,
             unconfirmed: VecDeque::new(),
         }
     }
@@ -608,11 +625,24 @@ impl Engine {
                 self.close("disconnected by user");
                 self.shared.set_link(LinkState::Disconnected);
             }
-            Msg::Job(Job::Set { cmd, src }) => {
+            Msg::Job(Job::Set { cmd, src, at }) => {
+                let unkey = cmd == "TX0;" || cmd == "MX0;";
                 // Never hold commands for later: a PTT click while the cable
-                // is out must not key the radio when it comes back.
+                // is out must not key the radio when it comes back. An
+                // un-key is the exception: it is owed to the radio.
                 if self.writer.is_none() {
-                    self.shared.log(Dir::Info, Some(src), format!("dropped {cmd}: radio not connected"));
+                    if unkey {
+                        self.pending_unkey = true;
+                        self.shared.log(Dir::Info, Some(src), format!("{cmd} will be sent when the radio reconnects"));
+                    } else {
+                        self.shared.log(Dir::Info, Some(src), format!("dropped {cmd}: radio not connected"));
+                    }
+                    return true;
+                }
+                // Queued while the port was being opened (the probe blocks
+                // this thread): just as stale.
+                if at < self.attached_at && !unkey {
+                    self.shared.log(Dir::Info, Some(src), format!("dropped {cmd}: sent before the radio connected"));
                     return true;
                 }
                 // Coalesce bursts (tuning knob, sliders): if the last queued
@@ -735,6 +765,8 @@ impl Engine {
         self.sets.clear();
         self.reads.clear();
         self.once.clear();
+        self.unconfirmed.clear();
+        self.attached_at = Instant::now();
         self.generation += 1;
         let generation = self.generation;
         let stop = Arc::new(AtomicBool::new(false));
@@ -770,6 +802,10 @@ impl Engine {
         self.shared.info(format!("connected: {}", link.description));
         self.shared.set_link(LinkState::Connected { description: link.description });
         self.setup_polls();
+        if std::mem::take(&mut self.pending_unkey) {
+            self.sets.push_front(("TX0;".into(), Source::Engine));
+            self.shared.info("un-keying: the transmitter may have been left keyed when the link dropped");
+        }
     }
 
     fn setup_polls(&mut self) {
@@ -825,8 +861,11 @@ impl Engine {
     fn close(&mut self, why: &str) {
         if let Some(w) = self.writer.as_mut() {
             if self.cat_keyed || self.shared.state.read().tx == 1 || self.shared.state.read().mox {
-                let _ = w.write_all(b"TX0;MX0;").and_then(|_| w.flush());
-                self.shared.info("un-keyed transmitter before closing");
+                if w.write_all(b"TX0;MX0;").and_then(|_| w.flush()).is_ok() {
+                    self.shared.info("un-keyed transmitter before closing");
+                } else {
+                    self.pending_unkey = true;
+                }
             }
             // Leave the radio as other software expects to find it.
             let _ = w.write_all(b"AI0;").and_then(|_| w.flush());
@@ -839,6 +878,7 @@ impl Engine {
         }
         self.generation += 1;
         self.cat_keyed = false;
+        self.unconfirmed.clear();
         self.outstanding = None;
         self.reads.clear();
         self.sets.clear();
@@ -1050,7 +1090,10 @@ impl Engine {
             return;
         }
         match code.as_str() {
-            "TX" | "MX" => self.cat_keyed = params == "1",
+            "TX" | "MX" => {
+                self.cat_keyed = params == "1";
+                *self.shared.tx_by.lock() = (params != "0").then(|| src.clone());
+            }
             "MD" => self.hold_until = Instant::now() + MODE_SETTLE,
             "PS" if params == "1" && src != Source::Engine => {
                 // Power-on needs a wake-up byte, then the command again 1-2 s later.

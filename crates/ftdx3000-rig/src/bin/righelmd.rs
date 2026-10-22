@@ -57,6 +57,9 @@ fn main() {
         }
     }
     config.auto_connect = true;
+    // The GUI saves a remote radio as its target in the same file; the
+    // daemon always serves the radio plugged into this computer.
+    config.engine.remote = None;
     let mut services = Services::start(config);
     for (cfg, st) in services.port_status() {
         match st {
@@ -70,6 +73,7 @@ fn main() {
     let mut last = LinkState::Disconnected;
     while !STOP.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(200));
+        services.tick();
         let link = services.rig.link();
         if link != last {
             println!("link: {link:?}");

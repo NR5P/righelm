@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
@@ -161,6 +161,8 @@ pub struct Found {
     pub addr: SocketAddr,
     pub audio: bool,
     pub auth: bool,
+    /// The server plays clients' microphones into the radio.
+    pub mic: bool,
     /// The server's own radio link state ("connected", "no-response", ...).
     pub radio: String,
     pub last_seen: Instant,
@@ -170,10 +172,11 @@ fn beacon_text(cfg: &RemoteServerConfig, port: u16, radio: &str) -> String {
     let name = if cfg.name.is_empty() { hostname() } else { cfg.name.clone() };
     let name: String = name.chars().filter(|c| *c != ';' && *c != '=').collect();
     format!(
-        "{GREETING} v{PROTOCOL};id={:016x};name={name};port={port};audio={};auth={};radio={radio}",
+        "{GREETING} v{PROTOCOL};id={:016x};name={name};port={port};audio={};auth={};mic={};radio={radio}",
         instance_id(),
         cfg.audio as u8,
-        (!cfg.password.is_empty()) as u8
+        (!cfg.password.is_empty()) as u8,
+        (cfg.audio && cfg.tx_audio && tx_allowed(cfg)) as u8
     )
 }
 
@@ -194,6 +197,7 @@ fn parse_beacon(text: &str, from: SocketAddr) -> Option<Found> {
         addr: SocketAddr::new(from.ip(), port),
         audio: fields.get("audio") == Some(&"1"),
         auth: fields.get("auth") == Some(&"1"),
+        mic: fields.get("mic") == Some(&"1"),
         radio: fields.get("radio").unwrap_or(&"?").to_string(),
         last_seen: Instant::now(),
     })
@@ -333,7 +337,7 @@ pub struct RemoteServer {
 }
 
 impl RemoteServer {
-    pub fn start(rig: Rig, cfg: RemoteServerConfig, default_rx: Option<AudioDevice>, default_tx: Option<AudioDevice>) -> io::Result<RemoteServer> {
+    pub fn start(rig: Rig, cfg: RemoteServerConfig) -> io::Result<RemoteServer> {
         let listener = TcpListener::bind(&cfg.bind)?;
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
@@ -406,10 +410,11 @@ impl RemoteServer {
         }
 
         // Audio: receive hellos and TX audio; stream RX audio to sessions.
+        // The radio's sound card is looked up whenever a stream starts (it may
+        // be switched on after us), and never replaced by the system default:
+        // that would be this computer's own microphone and speakers.
         if cfg.audio {
             let udp = Arc::new(udp);
-            let rx_dev = cfg.rx_device.clone().or(default_rx).unwrap_or_default();
-            let tx_dev = cfg.tx_device.clone().or(default_tx).unwrap_or_default();
             {
                 let (udp, stop, sessions, rig, cfg, status) = (udp.clone(), stop.clone(), sessions.clone(), rig.clone(), cfg.clone(), status.clone());
                 let alive_guard = alive.clone();
@@ -417,6 +422,9 @@ impl RemoteServer {
                     let _alive_guard = alive_guard;
                     let mut buf = [0u8; 4096];
                     let mut tx_play: Option<(Playback, Instant)> = None;
+                    let mut next_open = Instant::now();
+                    // One client's microphone at a time: never interleave two.
+                    let mut talker: Option<(u64, Instant)> = None;
                     while !stop.load(Ordering::Relaxed) {
                         if let Some((_, at)) = &tx_play {
                             if at.elapsed() > Duration::from_secs(1) {
@@ -433,11 +441,19 @@ impl RemoteServer {
                         sess.udp = Some(from);
                         sess.last_seen = Instant::now();
                         drop(s);
-                        if kind == PKT_TX && cfg.tx_audio && tx_allowed(&cfg) && rig.state().transmitting() {
-                            if tx_play.is_none() {
-                                match Playback::start(&tx_dev, AUDIO_RATE, Duration::from_millis(120)) {
-                                    Ok(p) => tx_play = Some((p, Instant::now())),
-                                    Err(e) => log::warn!("TX audio playback: {e}"),
+                        if kind == PKT_TX && cfg.tx_audio && tx_allowed(&cfg) && crate::txaudio::mic_tx_allowed(&rig, true) {
+                            if talker.is_some_and(|(id, at)| id != session && at.elapsed() < Duration::from_millis(500)) {
+                                continue;
+                            }
+                            talker = Some((session, Instant::now()));
+                            if tx_play.is_none() && Instant::now() >= next_open {
+                                next_open = Instant::now() + Duration::from_secs(2);
+                                match cfg.tx_device.clone().or_else(|| audio::radio_devices().1) {
+                                    Some(dev) => match Playback::start(&dev, AUDIO_RATE, Duration::from_millis(120)) {
+                                        Ok(p) => tx_play = Some((p, Instant::now())),
+                                        Err(e) => status.lock().error = Some(format!("TX audio {dev}: {e}")),
+                                    },
+                                    None => status.lock().error = Some("TX audio: the radio's sound card was not found".into()),
                                 }
                             }
                             if let Some((p, at)) = &mut tx_play {
@@ -450,7 +466,7 @@ impl RemoteServer {
                 })?;
             }
             {
-                let (stop, sessions, status) = (stop.clone(), sessions.clone(), status.clone());
+                let (stop, sessions, status, cfg) = (stop.clone(), sessions.clone(), status.clone(), cfg.clone());
                 let alive_guard = alive.clone();
                 thread::Builder::new().name("remote-udp-out".into()).spawn(move || {
                     let _alive_guard = alive_guard;
@@ -475,9 +491,16 @@ impl RemoteServer {
                         }
                         idle_since = Instant::now();
                         if capture.as_mut().is_none_or(|c| !c.alive()) {
+                            let Some(rx_dev) = cfg.rx_device.clone().or_else(|| audio::radio_devices().0) else {
+                                status.lock().error = Some("RX audio: the radio's sound card was not found (is the radio on?)".into());
+                                thread::sleep(Duration::from_secs(2));
+                                continue;
+                            };
                             match Capture::start(&rx_dev, AUDIO_RATE) {
                                 Ok(c) => {
-                                    status.lock().rx_audio = Some(rx_dev.to_string());
+                                    let mut st = status.lock();
+                                    st.rx_audio = Some(rx_dev.to_string());
+                                    st.error = None;
                                     capture = Some(c);
                                 }
                                 Err(e) => {
@@ -607,6 +630,23 @@ fn serve_session(
             return Ok(());
         }
     }
+    match mode.as_str() {
+        "CAT" => {}
+        "KEY" if tx_allowed(cfg) => {}
+        "KEY" => {
+            stream.write_all(b"DENIED this server does not allow transmit\n")?;
+            return Ok(());
+        }
+        "AUDIO" if cfg.audio => {}
+        "AUDIO" => {
+            stream.write_all(b"DENIED audio is turned off on this server\n")?;
+            return Ok(());
+        }
+        _ => {
+            stream.write_all(b"DENIED unsupported mode\n")?;
+            return Ok(());
+        }
+    }
     let session = random_u64();
     stream.write_all(format!("OK {session:016x} {} {AUDIO_RATE}\n", stream.local_addr()?.port()).as_bytes())?;
     let who = format!("remote {}", peer.ip());
@@ -618,6 +658,22 @@ fn serve_session(
             status.lock().cat_clients.retain(|c| *c != peer.to_string());
             rig.note(format!("remote control session from {peer} ended"));
             r
+        }
+        "KEY" => {
+            // Key the radio for a remote CW operator.
+            match crate::cw::LocalKeyLine::open(rig, Source::Client(who.clone())) {
+                Ok(mut line) => {
+                    stream.write_all(b"READY\n")?;
+                    rig.note(format!("remote CW key from {peer}"));
+                    let r = crate::cw::serve_key(&mut line, stream, stop);
+                    rig.note(format!("remote CW key from {peer} ended"));
+                    r
+                }
+                Err(e) => {
+                    stream.write_all(format!("ERR {e}\n").as_bytes())?;
+                    Ok(())
+                }
+            }
         }
         "AUDIO" if cfg.audio => {
             rig.note(format!("remote audio session from {peer}"));
@@ -711,10 +767,21 @@ fn tx_allowed(cfg: &RemoteServerConfig) -> bool {
 /// Connect, greet and authenticate. Returns the stream positioned after `OK`,
 /// the session id, server UDP port and audio rate.
 fn handshake(addr: &str, password: &str, mode: &str) -> io::Result<(TcpStream, String, u64, u16, u32)> {
-    let sock_addr = std::net::ToSocketAddrs::to_socket_addrs(addr)?
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("cannot resolve {addr}")))?;
-    let stream = TcpStream::connect_timeout(&sock_addr, Duration::from_secs(3))?;
+    let mut addrs: Vec<SocketAddr> = std::net::ToSocketAddrs::to_socket_addrs(addr)?.collect();
+    // "localhost" often resolves to ::1 first; servers usually listen on IPv4.
+    addrs.sort_by_key(|a| a.is_ipv6());
+    let mut last_err = io::Error::new(io::ErrorKind::NotFound, format!("cannot resolve {addr}"));
+    let mut connected = None;
+    for a in addrs {
+        match TcpStream::connect_timeout(&a, Duration::from_secs(3)) {
+            Ok(s) => {
+                connected = Some((s, a));
+                break;
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    let (stream, sock_addr) = connected.ok_or(last_err)?;
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -735,12 +802,27 @@ fn handshake(addr: &str, password: &str, mode: &str) -> io::Result<(TcpStream, S
             let session = it.next().and_then(|s| u64::from_str_radix(s, 16).ok()).unwrap_or(0);
             let udp_port = it.next().and_then(|s| s.parse().ok()).unwrap_or(sock_addr.port());
             let rate = it.next().and_then(|s| s.parse().ok()).unwrap_or(AUDIO_RATE);
+            if !(8_000..=48_000).contains(&rate) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, format!("unsupported audio rate {rate}")));
+            }
             // Anything the BufReader read ahead would be lost; the server
             // sends nothing until we do, so there is none.
             Ok((stream, server_name, session, udp_port, rate))
         }
         Some("DENIED") => Err(io::Error::new(io::ErrorKind::PermissionDenied, line.trim().trim_start_matches("DENIED ").to_string())),
         _ => Err(io::Error::new(io::ErrorKind::InvalidData, format!("unexpected reply: {}", line.trim()))),
+    }
+}
+
+/// Open a CW key session: the server arms its keying port, then answers.
+pub fn open_key_session(target: &RemoteTarget) -> io::Result<TcpStream> {
+    let (stream, _, _, _, _) = handshake(&target.addr, &target.password, "KEY")?;
+    stream.set_write_timeout(Some(Duration::from_secs(1)))?;
+    let reply = crate::cw::read_reply(&stream, Duration::from_secs(6))?;
+    match reply.split_once(' ').map_or((reply.as_str(), ""), |(a, b)| (a, b)) {
+        ("READY", _) => Ok(stream),
+        ("ERR", e) => Err(io::Error::other(e.to_string())),
+        _ => Err(io::Error::new(io::ErrorKind::InvalidData, format!("unexpected reply: {reply}"))),
     }
 }
 
@@ -775,6 +857,7 @@ pub struct AudioClientStatus {
     pub packets: u64,
     pub lost: u64,
     pub sending_mic: bool,
+    pub mic_level_db: f32,
     pub error: Option<String>,
 }
 
@@ -844,7 +927,7 @@ fn audio_session(
     generation: &Arc<AtomicU64>,
     tap: Option<&crate::spectrum::AudioTap>,
 ) -> io::Result<()> {
-    if !config.lock().audio {
+    if !config.lock().audio && !config.lock().send_mic {
         thread::sleep(Duration::from_millis(500));
         return Ok(());
     }
@@ -852,14 +935,23 @@ fn audio_session(
     let (mut control, name, session, udp_port, rate) = handshake(&target.addr, &target.password, "AUDIO")?;
     let server_ip = control.peer_addr()?.ip();
     let server_udp = SocketAddr::new(server_ip, udp_port);
-    let udp = UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))?;
+    let any: IpAddr = if server_ip.is_ipv6() { Ipv6Addr::UNSPECIFIED.into() } else { Ipv4Addr::UNSPECIFIED.into() };
+    let udp = UdpSocket::bind(SocketAddr::new(any, 0))?;
     udp.set_read_timeout(Some(Duration::from_millis(100)))?;
     let cfg = config.lock().clone();
     let mut speaker = Playback::start(&cfg.speaker, rate, Duration::from_millis(150))?;
-    let mut mic = if cfg.send_mic { Some(Capture::start(&cfg.mic, rate)?) } else { None };
+    // A microphone that won't open must not cost the receive audio.
+    let (mut mic, mic_error) = if cfg.send_mic {
+        match audio::computer_mic(&cfg.mic).and_then(|d| Capture::start(&d, rate).map_err(|e| format!("microphone {d}: {e}"))) {
+            Ok(c) => (Some(c), None),
+            Err(e) => (None, Some(e)),
+        }
+    } else {
+        (None, None)
+    };
     {
         let mut s = status.lock();
-        *s = AudioClientStatus { connected: true, server: name.clone(), ..Default::default() };
+        *s = AudioClientStatus { connected: true, server: name.clone(), error: mic_error, mic_level_db: -100.0, ..Default::default() };
     }
     rig.note(format!("receiving audio from \"{name}\""));
     let mut last_hello = Instant::now() - Duration::from_secs(5);
@@ -881,18 +973,24 @@ fn audio_session(
         if !speaker.alive() {
             break Err(io::Error::other("speaker playback stopped"));
         }
-        // Microphone: only while the radio is transmitting.
+        // Microphone: only while this operator transmits in a phone mode.
         if let Some(m) = &mic {
-            let transmitting = rig.state().transmitting();
+            let transmitting = crate::txaudio::mic_tx_allowed(rig, false);
             let gain = config.lock().mic_gain;
+            let mut level = None;
             while let Ok(mut f) = m.frames.try_recv() {
+                audio::apply_gain(&mut f, gain);
+                level = Some(audio::level_dbfs(&f));
                 if transmitting {
-                    audio::apply_gain(&mut f, gain);
                     tx_seq = tx_seq.wrapping_add(1);
                     let _ = udp.send_to(&packet(PKT_TX, session, tx_seq, &f), server_udp);
                 }
             }
-            status.lock().sending_mic = transmitting;
+            let mut s = status.lock();
+            s.sending_mic = transmitting;
+            if let Some(l) = level {
+                s.mic_level_db = l;
+            }
         }
         match udp.recv_from(&mut buf) {
             Ok((n, from)) if from.ip() == server_ip => {
@@ -919,7 +1017,8 @@ fn audio_session(
                 if let Some(t) = tap {
                     t.publish(rate, &samples);
                 }
-                let vol = config.lock().volume;
+                // Sending the mic without listening: keep quiet.
+                let vol = if config.lock().audio { config.lock().volume } else { 0.0 };
                 let level = audio::level_dbfs(&samples);
                 audio::apply_gain(&mut samples, vol);
                 speaker.push(samples);
@@ -951,10 +1050,10 @@ mod tests {
     fn restarts_on_the_same_port_immediately() {
         let rig = Rig::start();
         let cfg = RemoteServerConfig { bind: "127.0.0.1:0".into(), audio: true, rx_device: Some(AudioDevice::Alsa("null".into())), ..Default::default() };
-        let first = RemoteServer::start(rig.clone(), cfg.clone(), None, None).unwrap();
+        let first = RemoteServer::start(rig.clone(), cfg.clone()).unwrap();
         let addr = first.addr;
         drop(first);
-        let again = RemoteServer::start(rig.clone(), RemoteServerConfig { bind: addr.to_string(), ..cfg }, None, None);
+        let again = RemoteServer::start(rig.clone(), RemoteServerConfig { bind: addr.to_string(), ..cfg });
         assert!(again.is_ok(), "{:?}", again.err());
         rig.shutdown();
     }
@@ -990,7 +1089,7 @@ mod tests {
     fn remote_control_end_to_end() {
         let server_rig = sim_rig();
         let cfg = RemoteServerConfig { bind: "127.0.0.1:0".into(), password: "secret".into(), audio: false, ..Default::default() };
-        let server = RemoteServer::start(server_rig.clone(), cfg, None, None).unwrap();
+        let server = RemoteServer::start(server_rig.clone(), cfg).unwrap();
         let addr = server.addr.to_string();
 
         // Wrong password is refused.
@@ -1038,7 +1137,7 @@ mod tests {
         };
         // Transmit (including mic audio) needs a password on the server.
         let cfg = RemoteServerConfig { tx_audio: true, password: "pw".into(), ..cfg };
-        let server = RemoteServer::start(server_rig.clone(), cfg, None, None).unwrap();
+        let server = RemoteServer::start(server_rig.clone(), cfg).unwrap();
         let target = RemoteTarget { addr: server.addr.to_string(), password: "pw".into() };
         // The client mirrors the remote radio's state over its own CAT session.
         let client_rig = Rig::start();
@@ -1082,7 +1181,7 @@ mod tests {
         let server_rig = Rig::start();
         server_rig.connect_link(sim.link(), EngineConfig { read_menu_on_connect: false, ..Default::default() });
         // No password: tuning works, transmitting doesn't.
-        let open = RemoteServer::start(server_rig.clone(), RemoteServerConfig { bind: "127.0.0.1:0".into(), audio: false, ..Default::default() }, None, None).unwrap();
+        let open = RemoteServer::start(server_rig.clone(), RemoteServerConfig { bind: "127.0.0.1:0".into(), audio: false, ..Default::default() }).unwrap();
         let mut c = TcpStream::connect(open.addr).unwrap();
         let mut line = String::new();
         BufReader::new(c.try_clone().unwrap()).read_line(&mut line).unwrap();
@@ -1096,8 +1195,6 @@ mod tests {
         let secured = RemoteServer::start(
             server_rig.clone(),
             RemoteServerConfig { bind: "127.0.0.1:0".into(), audio: false, password: "pw".into(), ..Default::default() },
-            None,
-            None,
         )
         .unwrap();
         let link = connect_cat(&RemoteTarget { addr: secured.addr.to_string(), password: "pw".into() }).unwrap();

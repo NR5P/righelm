@@ -253,6 +253,10 @@ impl RadioState {
         if self.rx_on_b() { self.mode_b } else { self.mode_a }
     }
 
+    pub fn tx_mode(&self) -> Option<Mode> {
+        if self.tx_vfo == 1 { self.mode_b } else { self.mode_a }
+    }
+
     pub fn tx_freq(&self) -> u64 {
         if self.tx_vfo == 1 { self.freq_b } else { self.freq_a }
     }

@@ -27,6 +27,10 @@ port and shares it with any number of other programs, on this computer or across
 - **Remote over the LAN.** Run a second copy on another computer: it finds the radio
   automatically, controls everything, plays the radio's audio, and can send your
   microphone back.
+- **Computer microphone.** One click switches between the radio's own mic and this
+  computer's (see below), here or on a remote radio.
+- **CW from the computer.** Key the radio from the touchpad, mouse or keyboard (straight key
+  or iambic paddles) or send typed text, behind an obvious ARM switch.
 
 ## Build and install
 
@@ -130,8 +134,48 @@ Notes for Windows:
 | 038  | CAT RATE          | 38400 (any rate works; it's auto-detected) |
 | 039  | CAT TIME OUT TIMER| set to 100 ms automatically on connect |
 
-For transmit audio from a computer (WSJT-X or remote mic), set **075 DATA IN SELECT** and/or
-**103 SSB MIC SEL** to **USB**.
+For WSJT-X and other data programs, set **075 DATA IN SELECT** to **USB**. The microphone
+switch and the CW key set the other menus they need themselves (below).
+
+## Talking through the computer's microphone
+
+The **MIC** switch on the Operate page (also at the top of *Settings*) chooses where your
+voice comes from:
+
+- **RADIO MIC**: the microphone plugged into the radio. The radio's AM, FM and SSB MIC SEL
+  menus (053, 085, 103) are what they were before you switched.
+- **COMPUTER MIC**: this computer's microphone. Those menus are set to **USB**, and the mic
+  is played into the radio's USB audio input while you transmit. Clicking back restores the
+  menus.
+
+The computer mic only reaches the radio while you transmit in SSB, AM or FM, keyed by MOX
+in RigHelm, the radio's own PTT or footswitch, or a remote operator. It is never mixed into
+a transmission that WSJT-X or another program on a virtual port or rigctld keyed. *Settings
+→ Transmit audio* picks the microphone and its gain and shows its level. "System default"
+never picks the radio's own audio input, even when PipeWire makes that the default.
+
+When controlling a remote radio, the same switch sends this computer's mic over the
+network. The radio's computer must allow it: *Remote (LAN) → Accept microphone audio for
+transmit*.
+
+## Sending CW from the computer
+
+Click **CW KEY OFF** on the Operate page to arm the key. The switch turns red, a red
+**CW KEY ARMED** badge appears at the top right, the radio goes to CW with break-in on,
+and a key pad opens:
+
+- **Key pad**: press and hold with the touchpad or mouse. Iambic modes: left button = dit,
+  right button (two-finger press on a touchpad) = dah. Straight key mode: hold = key down.
+- **Keyboard**: `[` = dit, `]` = dah (or the straight key).
+- **Send text**: type and press Enter. Touching the paddles, **Stop** or Esc stops it.
+- The speed is the radio's keyer speed (CW group → Speed). *Sidetone here* plays a tone on
+  this computer, which helps on a remote radio.
+
+The radio is keyed on its Standard USB serial port's RTS line, with menu 065 PC KEYING
+set to RTS. The key is never armed when RigHelm starts. It disarms itself when the radio
+disconnects or leaves CW, and after 10 minutes unused. A key held down longer than 6
+seconds is released. On a remote radio, the timing is made on your computer and the
+server keys its own port. It lets go if your connection goes quiet.
 
 ## Sharing the radio with other programs
 
@@ -179,8 +223,9 @@ radio**, set a password, and enable it. On any other computer, start the app and
   its local `vcom1`.
 - **Receive audio** streams to the remote computer's speakers (24 kHz, 16-bit PCM over UDP,
   about 400 kbit/s, with latency held to roughly 150 ms).
-- **Send my microphone while transmitting** streams the mic back to the radio. It only
-  flows while the radio is actually transmitting, and only if the server allows it.
+- **The MIC switch** (COMPUTER MIC) streams your microphone to the radio while you
+  transmit with MOX, if the server accepts microphone audio. The **CW key** works too, if
+  the server allows transmit.
 - The server uses TCP+UDP 4533 for control and audio and UDP 4534 for discovery. If you run
   a firewall:
 
@@ -219,8 +264,19 @@ command in the CAT reference, supports auto-information, and rejects bad command
 cargo test
 ```
 
-Runs the protocol, engine, virtual port (with real PTYs), rigctld, and remote control/audio
-tests.
+Runs the protocol, engine, virtual port (with real PTYs), rigctld, remote control/audio and
+CW keyer tests.
+
+With the radio connected to a dummy load, two hardware checks key it briefly at 5 W. Close
+RigHelm first, because they need the CAT port:
+
+```bash
+cargo run --release --example cw_check
+```
+
+```bash
+cargo run --release --example mic_check
+```
 
 ## Files
 

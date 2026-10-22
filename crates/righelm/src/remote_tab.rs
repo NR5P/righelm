@@ -20,7 +20,7 @@ pub struct RemoteState {
     addr: String,
     password: String,
     show_password: bool,
-    nodes: Vec<DeviceEntry>,
+    pub nodes: Vec<DeviceEntry>,
     nodes_at: Option<Instant>,
     /// Server settings being edited (applied with the Apply button).
     server_edit: Option<RemoteServerConfig>,
@@ -58,7 +58,7 @@ fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
     ui.add_space(8.0);
 }
 
-fn device_combo(ui: &mut Ui, id: &str, dev: &mut AudioDevice, nodes: &[DeviceEntry], input: bool) -> bool {
+pub fn device_combo(ui: &mut Ui, id: &str, dev: &mut AudioDevice, nodes: &[DeviceEntry], input: bool) -> bool {
     let label = match &*dev {
         AudioDevice::Default => "System default".to_string(),
         other => nodes.iter().find(|x| x.device == *other).map(|x| x.label.clone()).unwrap_or_else(|| other.to_string()),
@@ -73,15 +73,20 @@ fn device_combo(ui: &mut Ui, id: &str, dev: &mut AudioDevice, nodes: &[DeviceEnt
     changed
 }
 
-pub fn show(app: &mut App, ui: &mut Ui) {
+/// Re-list speakers and microphones every 10 s while a page shows them.
+pub fn refresh_nodes(app: &mut App) {
     if app.remote.nodes_at.is_none_or(|t| t.elapsed() > Duration::from_secs(10)) {
         app.remote.nodes = ftdx3000_rig::audio::list_devices();
         app.remote.nodes_at = Some(Instant::now());
-        if app.remote.password.is_empty() {
-            if let Some(t) = &app.services.config.last_remote {
-                app.remote.addr = t.addr.clone();
-                app.remote.password = t.password.clone();
-            }
+    }
+}
+
+pub fn show(app: &mut App, ui: &mut Ui) {
+    refresh_nodes(app);
+    if app.remote.addr.is_empty() && app.remote.password.is_empty() {
+        if let Some(t) = &app.services.config.last_remote {
+            app.remote.addr = t.addr.clone();
+            app.remote.password = t.password.clone();
         }
     }
     if app.remote.fw.as_ref().is_none_or(|(t, _, _)| t.elapsed() > Duration::from_secs(15)) {
@@ -290,26 +295,14 @@ fn audio_controls(app: &mut App, ui: &mut Ui) {
         ui.label("Speaker");
         changed |= device_combo(ui, "speaker", &mut cfg.speaker, &nodes, false);
         ui.end_row();
-        ui.label("Microphone");
-        ui.horizontal(|ui| {
-            changed |= ui.checkbox(&mut cfg.send_mic, "Send my microphone while transmitting").changed();
-            if st.as_ref().is_some_and(|s| s.sending_mic) {
-                ui.label(RichText::new("● ON AIR").color(RED).strong());
-            }
-        });
-        ui.end_row();
-        ui.label("");
-        changed |= device_combo(ui, "mic", &mut cfg.mic, &nodes, true);
-        ui.end_row();
-        ui.label("Mic gain");
-        changed |= ui.add(Slider::new(&mut cfg.mic_gain, 0.0..=4.0).step_by(0.05)).changed();
-        ui.end_row();
     });
-    ui.label(RichText::new("For voice/data over the network the radio must take TX audio from USB: menu 103 SSB MIC SEL / 075 DATA IN SELECT = USB.").weak());
     if changed {
         app.services.update_audio_client();
         let _ = app.services.config.save();
     }
+    ui.add_space(6.0);
+    crate::settings_tab::tx_audio_panel(app, ui);
+    ui.label(RichText::new("For data modes over the network (WSJT-X on this computer) the radio takes TX audio from USB: menu 075 DATA IN SELECT = USB.").weak());
 }
 
 fn server_section(app: &mut App, ui: &mut Ui) {

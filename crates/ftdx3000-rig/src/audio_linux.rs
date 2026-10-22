@@ -17,10 +17,25 @@ fn have(cmd: &str) -> bool {
     Command::new("sh").args(["-c", &format!("command -v {cmd} >/dev/null")]).status().is_ok_and(|s| s.success())
 }
 
+/// `pw-cat` 1.x reads/writes a sound file on `-` unless told `--raw`
+/// (playback then fails outright, recording gets a file header); older
+/// versions have no such flag and are raw already.
+fn pw_raw_flag() -> Option<&'static str> {
+    static RAW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let raw = *RAW.get_or_init(|| {
+        Command::new("pw-cat").arg("--help").output().is_ok_and(|o| {
+            let text = [o.stdout, o.stderr].concat();
+            String::from_utf8_lossy(&text).contains("--raw")
+        })
+    });
+    raw.then_some("--raw")
+}
+
 fn record_command(dev: &AudioDevice, rate: u32) -> Command {
     let pipewire = !matches!(dev, AudioDevice::Alsa(_)) && have("pw-record");
     if pipewire {
         let mut c = Command::new("pw-record");
+        c.args(pw_raw_flag());
         if let AudioDevice::PipeWire(n) | AudioDevice::Named(n) = dev {
             c.args(["--target", n]);
         }
@@ -41,6 +56,7 @@ fn play_command(dev: &AudioDevice, rate: u32) -> Command {
     let pipewire = !matches!(dev, AudioDevice::Alsa(_)) && have("pw-play");
     if pipewire {
         let mut c = Command::new("pw-play");
+        c.args(pw_raw_flag());
         if let AudioDevice::PipeWire(n) | AudioDevice::Named(n) = dev {
             c.args(["--target", n]);
         }
@@ -154,6 +170,15 @@ pub fn list_devices() -> Vec<DeviceEntry> {
         .into_iter()
         .map(|n| DeviceEntry { input: n.class == "Audio/Source", label: n.description, device: AudioDevice::PipeWire(n.name) })
         .collect()
+}
+
+/// The system's default input (PipeWire's default source), if known.
+pub fn default_input() -> Option<AudioDevice> {
+    let out = Command::new("wpctl").args(["inspect", "@DEFAULT_AUDIO_SOURCE@"]).stderr(Stdio::null()).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines()
+        .find_map(|l| l.trim().trim_start_matches('*').trim().strip_prefix("node.name = "))
+        .map(|v| AudioDevice::PipeWire(v.trim().trim_matches('"').to_string()))
 }
 
 /// The radio codec's capture and playback devices, if detected.

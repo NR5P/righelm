@@ -156,8 +156,20 @@ impl Drop for RigctldServer {
     }
 }
 
+/// Notice a peer that vanished without closing (Wi-Fi drop, closed laptop)
+/// within about 10 s, so a keyed radio is released.
+fn fast_keepalive(stream: &TcpStream) {
+    let ka = socket2::TcpKeepalive::new().with_time(Duration::from_secs(5)).with_interval(Duration::from_secs(1));
+    #[cfg(unix)]
+    let ka = ka.with_retries(4);
+    if let Err(e) = socket2::SockRef::from(stream).set_tcp_keepalive(&ka) {
+        log::debug!("TCP keepalive: {e}");
+    }
+}
+
 fn serve_client(rig: &Rig, cfg: &RigctldConfig, stream: TcpStream, peer: SocketAddr, stop: &AtomicBool) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_millis(500)))?;
+    fast_keepalive(&stream);
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
     writer.set_write_timeout(Some(Duration::from_secs(2)))?;
@@ -250,7 +262,7 @@ impl Session {
             }
             None => {
                 let mut chars = body.chars();
-                let c = chars.next()?;
+                let Some(c) = chars.next() else { return Some(format!("RPRT {EINVAL}\n")) };
                 (short_name(c).unwrap_or("?").to_string(), chars.as_str().trim().to_string())
             }
         };
@@ -325,17 +337,11 @@ impl Session {
         let mut f = ftdx3000_cat::Framer::new();
         let frames = f.push(cmd.as_bytes());
         for frame in &frames {
-            if ftdx3000_cat::command::is_tx_command(frame) {
-                if self.cfg.block_tx {
-                    self.rig.note(format!("{}: blocked {frame} (transmit not allowed)", self.source));
-                    return Out::Err(ERJCTED);
-                }
-                if frame.starts_with("TX") || frame.starts_with("MX") {
-                    self.client.keyed.store(true, Ordering::Relaxed);
-                }
-            } else if ftdx3000_cat::command::is_unkey_command(frame) {
-                self.client.keyed.store(false, Ordering::Relaxed);
+            if ftdx3000_cat::command::is_tx_command(frame) && self.cfg.block_tx {
+                self.rig.note(format!("{}: blocked {frame} (transmit not allowed)", self.source));
+                return Out::Err(ERJCTED);
             }
+            self.client.observe_set(&ftdx3000_cat::command::normalize(frame));
         }
         for frame in frames {
             self.rig.send_from(&frame, self.source.clone());
@@ -378,7 +384,7 @@ impl Session {
             },
             "set_mode" => {
                 let Some(mode) = args.first().and_then(|m| Mode::from_hamlib(m)) else { return Out::Err(EINVAL) };
-                let width = num(1).map(|w| w as i64).unwrap_or(0);
+                let width = num(1).map(|w| w as i64).unwrap_or(-1);
                 let s = self.state();
                 if s.mode_a != Some(mode) {
                     let r = self.send(&ftdx3000_cat::set_mode_cmd(mode));
@@ -742,12 +748,13 @@ fn passband(s: &RadioState, mode: Mode) -> u32 {
     }
 }
 
-/// Commands to select the closest width (Hamlib semantics: 0 = keep, -1 = normal).
+/// Commands to select the closest width (Hamlib semantics:
+/// `RIG_PASSBAND_NOCHANGE` = -1 keeps it, `RIG_PASSBAND_NORMAL` = 0 is the default).
 pub fn width_cmds(class: WidthClass, width: i64) -> Vec<String> {
-    if width == 0 || class == WidthClass::Fixed {
+    if width < 0 || class == WidthClass::Fixed {
         return Vec::new();
     }
-    if width < 0 {
+    if width == 0 {
         return vec!["NA00;".into(), "SH000;".into()];
     }
     let narrow_max = if class == WidthClass::Ssb { 1800 } else { 500 };
@@ -942,7 +949,8 @@ mod tests {
         assert_eq!(width_cmds(WidthClass::Ssb, 500), vec!["NA01;", "SH003;"]);
         assert_eq!(width_cmds(WidthClass::Cw, 500), vec!["NA01;", "SH010;"]);
         assert_eq!(width_cmds(WidthClass::Rtty, 3000), vec!["NA00;", "SH016;"]);
-        assert_eq!(width_cmds(WidthClass::Cw, 0), Vec::<String>::new());
+        assert_eq!(width_cmds(WidthClass::Cw, -1), Vec::<String>::new());
+        assert_eq!(width_cmds(WidthClass::Cw, 0), vec!["NA00;", "SH000;"]);
         assert_eq!(width_cmds(WidthClass::Fixed, 9000), Vec::<String>::new());
     }
 

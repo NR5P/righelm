@@ -130,15 +130,32 @@ pub(crate) struct ClientCtx {
     pub ai: AtomicBool,
     /// The client keyed the transmitter (TX1/MX1) and hasn't released it.
     pub keyed: AtomicBool,
+    /// The client turned VOX on (any audio could then key the radio).
+    pub vox: AtomicBool,
 }
 
 impl ClientCtx {
+    /// Track what an allowed Set leaves switched on, for `disconnected`.
+    pub fn observe_set(&self, frame: &str) {
+        let Some((code, p)) = ftdx3000_cat::frame::split(frame) else { return };
+        match (code.as_str(), p) {
+            ("TX" | "MX", "0") => self.keyed.store(false, Ordering::Relaxed),
+            ("TX" | "MX", p) if !p.is_empty() => self.keyed.store(true, Ordering::Relaxed),
+            ("VX", "0" | "1") => self.vox.store(p == "1", Ordering::Relaxed),
+            _ => {}
+        }
+    }
+
     /// The client is gone: reset, and release the transmitter if it held it.
     pub fn disconnected(&self, rig: &Rig, source: &Source) {
         self.ai.store(false, Ordering::Relaxed);
         if self.keyed.swap(false, Ordering::Relaxed) {
             rig.send_from("TX0;MX0;", source.clone());
             rig.note(format!("{source} went away while transmitting: un-keyed the radio"));
+        }
+        if self.vox.swap(false, Ordering::Relaxed) {
+            rig.send_from("VX0;", source.clone());
+            rig.note(format!("{source} went away with VOX on: turned VOX off"));
         }
     }
 }
@@ -291,17 +308,11 @@ pub(crate) fn handle(rig: &Rig, config: &VirtualPortConfig, source: &Source, cli
             None
         }
         Request::Set => {
-            if command::is_tx_command(&f) {
-                if config.block_tx {
-                    rig.note(format!("{source}: blocked {f} (transmit not allowed)"));
-                    return None;
-                }
-                if matches!(code.as_str(), "TX" | "MX") {
-                    client.keyed.store(true, Ordering::Relaxed);
-                }
-            } else if command::is_unkey_command(&f) {
-                client.keyed.store(false, Ordering::Relaxed);
+            if command::is_tx_command(&f) && config.block_tx {
+                rig.note(format!("{source}: blocked {f} (transmit not allowed)"));
+                return None;
             }
+            client.observe_set(&f);
             rig.send_from(&f, source.clone());
             None
         }

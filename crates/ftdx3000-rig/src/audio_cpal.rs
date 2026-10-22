@@ -278,6 +278,11 @@ pub fn list_devices() -> Vec<DeviceEntry> {
     out
 }
 
+/// The system's default input device.
+pub fn default_input() -> Option<AudioDevice> {
+    cpal::default_host().default_input_device().map(|d| AudioDevice::Named(device_name(&d)))
+}
+
 /// The radio's USB codec ("USB Audio CODEC", a TI PCM2903B), if present.
 pub fn radio_devices() -> (Option<AudioDevice>, Option<AudioDevice>) {
     let is_radio = |n: &str| {

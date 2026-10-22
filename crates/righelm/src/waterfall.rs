@@ -150,9 +150,10 @@ impl Waterfall {
                 .collect();
             // Noise floor: a low percentile inside the passband, smoothed.
             let (lo, hi) = band.unwrap_or((300.0, 2700.0));
-            let c0 = ((lo.max(100.0) / max_hz) * COLS as f32) as usize;
-            let c1 = (((hi / max_hz) * COLS as f32) as usize).clamp(c0 + 8, COLS);
-            let mut inband: Vec<f32> = cols[c0.min(COLS - 8)..c1].to_vec();
+            // At least 8 columns, even for a passband above the shown range.
+            let c0 = (((lo.max(100.0) / max_hz) * COLS as f32) as usize).min(COLS - 8);
+            let c1 = (((hi / max_hz) * COLS as f32) as usize).max(c0 + 8).min(COLS);
+            let mut inband: Vec<f32> = cols[c0..c1].to_vec();
             inband.sort_by(|a, b| a.total_cmp(b));
             let p = inband[inband.len() * 3 / 10];
             self.noise = if self.lines == 0 { p } else { 0.95 * self.noise + 0.05 * p };

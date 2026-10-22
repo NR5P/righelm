@@ -29,6 +29,44 @@ impl Default for OperateState {
     }
 }
 
+/// The transmit-audio switch, where the operator looks: one click between
+/// the radio's own microphone and this computer's.
+fn mic_switch(app: &mut App, ui: &mut Ui) {
+    let computer = app.services.config.tx_audio.computer_mic;
+    let (sending, level, error) = if app.services.config.engine.remote.is_some() {
+        let st = app.services.audio_client_status().unwrap_or_default();
+        (st.sending_mic, st.mic_level_db, st.error)
+    } else {
+        let st = app.services.mic_status().unwrap_or_default();
+        (st.sending, st.level_db, st.error)
+    };
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("MIC").strong());
+        let text = if computer { "COMPUTER MIC" } else { "RADIO MIC" };
+        let button = egui::Button::new(RichText::new(text).strong().size(15.0).color(if computer { Color32::BLACK } else { Color32::LIGHT_GRAY }))
+            .min_size(egui::vec2(170.0, 30.0))
+            .fill(if computer { AMBER } else { Color32::from_rgb(40, 34, 20) });
+        let hover = if computer {
+            "Talking into this computer's microphone. Click to go back to the radio's own mic."
+        } else {
+            "Talking into the radio's own mic. Click to use this computer's microphone."
+        };
+        if ui.add(button).on_hover_text(hover).clicked() {
+            app.services.set_computer_mic(!computer);
+        }
+        if computer {
+            let frac = ((level + 60.0) / 60.0).clamp(0.0, 1.0);
+            widgets::Meter { label: "", fraction: frac, text: String::new(), color: GREEN, ticks: &[], red_from: Some(0.9), peak: None }.show(ui, 90.0);
+            if sending {
+                ui.label(RichText::new("● ON AIR").color(RED).strong());
+            }
+            if let Some(e) = error {
+                ui.label(RichText::new("⚠").color(AMBER)).on_hover_text(e);
+            }
+        }
+    });
+}
+
 const STEPS: [(i64, &str); 6] = [(1, "1 Hz"), (10, "10 Hz"), (100, "100 Hz"), (1000, "1 kHz"), (5000, "5 kHz"), (10_000, "10 kHz")];
 
 pub fn show(app: &mut App, ui: &mut Ui) {
@@ -45,6 +83,10 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 ui.add_space(16.0);
                 ui.vertical(|ui| meters_block(app, ui, &rig, &s));
             });
+            if app.services.cw().is_some() {
+                ui.add_space(6.0);
+                crate::cw_key::panel(app, ui);
+            }
             ui.add_space(6.0);
             bands_and_modes(ui, &rig, &s);
             ui.add_space(4.0);
@@ -326,6 +368,8 @@ fn meters_block(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
             ui.label(RichText::new("HI-SWR").strong().color(RED));
         }
     });
+    mic_switch(app, ui);
+    crate::cw_key::arm_switch(app, ui);
     ui.horizontal(|ui| {
         ui.label("Antenna");
         for a in 1..=3u8 {
@@ -335,7 +379,7 @@ fn meters_block(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
         }
         ui.separator();
         ui.label("Radio meter");
-        let names = [(0, "COMP"), (1, "ALC"), (3, "SWR"), (4, "ID"), (5, "VDD")];
+        let names = [(0, "COMP"), (1, "ALC"), (2, "PO"), (3, "SWR"), (4, "ID"), (5, "VDD")];
         ComboBox::from_id_salt("ms")
             .width(70.0)
             .selected_text(names.iter().find(|n| n.0 == s.meter_sw).map(|n| n.1).unwrap_or("PO"))

@@ -1,6 +1,7 @@
 //! RigHelm — the Linux alternative to Win4Yaesu for the Yaesu FTDX3000.
 
 mod console;
+mod cw_key;
 mod memories;
 mod menu_tab;
 mod operate;
@@ -52,6 +53,7 @@ pub struct App {
     pub sharing: sharing::SharingState,
     pub console: console::ConsoleState,
     pub remote: remote_tab::RemoteState,
+    pub cw_key: cw_key::CwKeyState,
     pub logo: egui::TextureHandle,
     pub waterfall: waterfall::Waterfall,
     /// Self-test: render each tab to `<dir>/<tab>.ppm` and exit
@@ -106,6 +108,7 @@ impl App {
             sharing,
             console: Default::default(),
             remote: Default::default(),
+            cw_key: Default::default(),
             logo,
             waterfall: Default::default(),
             screenshots: std::env::var_os("FTDX3000_SCREENSHOTS").map(|d| (d.into(), Instant::now(), 0)),
@@ -169,6 +172,14 @@ impl App {
             ui.label(RichText::new("FTDX3000").weak());
             ui.add(egui::Label::new(RichText::new(text).weak()).truncate());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if self.services.cw().is_some()
+                    && ui
+                        .add(egui::Button::new(RichText::new("● CW KEY ARMED").strong().color(Color32::WHITE)).fill(RED))
+                        .on_hover_text("Click to disarm the CW key")
+                        .clicked()
+                {
+                    self.services.cw_arm(false);
+                }
                 if link.is_open() || matches!(link, LinkState::Error(_) | LinkState::Connecting(_)) {
                     if ui.button("Disconnect").clicked() {
                         self.rig().disconnect();
@@ -224,6 +235,7 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.services.tick();
         if self.last_detect.elapsed() > Duration::from_secs(3) {
             self.radios = detect::detect_radios();
             self.last_detect = Instant::now();
