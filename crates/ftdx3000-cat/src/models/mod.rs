@@ -35,6 +35,7 @@ pub static ALL: &[&RadioModel] = &[
     &ft891::FT891,
     &ftdx5000::FTDX5000,
     &ftdx1200::FTDX1200,
+    &ftdx1200::FTDX1200_FFT1,
     &ft950::FT950,
     &ft2000::FT2000,
     &ft450d::FT450D,

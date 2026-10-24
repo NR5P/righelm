@@ -62,9 +62,14 @@ fn hamlib_split_levels_ptt_rit() {
                 assert!(a.iter().any(|l| l == "0"), "{}: PTT not off: {a:?}", m.key);
                 assert_eq!(port.core.lock().tx, 0, "{}", m.key);
 
-                // RIT on/off.
-                let a = run(m, &port, &["U RIT 1", "u RIT", "U RIT 0", "u RIT"]);
-                assert_eq!(a.iter().filter(|l| *l == "1" || *l == "0").cloned().collect::<Vec<_>>(), vec!["1", "0"], "{}: {a:?}", m.key);
+                // RIT offset (the clarifier), read back by a fresh rigctl
+                // (one run answers from its cache).
+                run(m, &port, &["J 120"]);
+                let a = run(m, &port, &["j"]);
+                assert!(a.iter().any(|l| l == "120"), "{}: RIT read back {a:?}", m.key);
+                run(m, &port, &["J -50"]);
+                let a = run(m, &port, &["j"]);
+                assert!(a.iter().any(|l| l == "-50"), "{}: RIT read back {a:?}", m.key);
             });
         }
     });
