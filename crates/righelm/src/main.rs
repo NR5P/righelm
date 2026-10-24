@@ -93,7 +93,7 @@ impl App {
         let ctx = cc.egui_ctx.clone();
         services.rig.set_repaint(move || ctx.request_repaint());
         if let Some(r) = &detected {
-            services.rig.note(format!("auto-detected FTDX3000: CAT {} (USB {})", r.cat.stable_path(), r.usb_path));
+            services.rig.note(format!("auto-detected {}: CAT {} (USB {})", r.title(), r.cat.stable_path(), r.usb_path));
             if let Some(a) = &r.audio {
                 services.rig.note(format!("radio audio: ALSA {} — {}", a.alsa_plughw(), a.name));
             }
@@ -249,7 +249,10 @@ impl App {
             };
             ui.label(RichText::new("●").color(dot).size(18.0)).on_hover_text(&text);
             ui.add(egui::Image::new(&self.logo).fit_to_exact_size(egui::vec2(26.0, 26.0)));
-            ui.label(RichText::new("RigHelm").strong().size(18.0).color(AMBER)).on_hover_text("FTDX3000 rig control");
+            ui.label(RichText::new("RigHelm").strong().size(18.0).color(AMBER)).on_hover_text("Rig control");
+            if link.is_open() {
+                ui.label(RichText::new(self.rig().model().name).strong().size(14.0)).on_hover_text(self.rig().model().full_name());
+            }
             ui.add_space(8.0);
             for (tab, label) in [
                 (Tab::Operate, "Operate"),
@@ -439,7 +442,7 @@ fn main() -> eframe::Result {
     let demo = std::env::var_os("RIGHELM_DEMO").is_some();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("RigHelm — FTDX3000 Rig Control")
+            .with_title("RigHelm — Rig Control")
             .with_app_id("righelm")
             .with_icon(eframe::icon_data::from_png_bytes(ICON_PNG).expect("embedded icon"))
             .with_inner_size(if demo { [1920.0, 1080.0] } else { window_size().unwrap_or([1280.0, 860.0]) })

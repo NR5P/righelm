@@ -1,16 +1,15 @@
-//! All 196 EX menu items, with backup and restore.
+//! The radio's whole menu (196 items on the FTDX3000), with backup and
+//! restore.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use eframe::egui::{self, ComboBox, DragValue, RichText, Ui};
-use ftdx3000_cat::menu::{self, Kind, MENU, MenuItem, Value};
+use ftdx3000_cat::RadioModel;
+use ftdx3000_cat::menu::{self, Kind, MenuItem, Value};
 
 use crate::widgets::{AMBER, DIM, RED};
 use crate::{App, Confirm};
-
-/// Menu items that change how we talk to the radio; never restored by default.
-const CAT_ITEMS: [u16; 4] = [37, 38, 39, 40];
 
 pub struct MenuState {
     group: Option<&'static str>,
@@ -18,6 +17,8 @@ pub struct MenuState {
     num_edits: HashMap<u16, i32>,
     text_edits: HashMap<u16, String>,
     path: String,
+    /// The model `path` was made for (the default name follows the radio).
+    path_model: &'static str,
     /// Pending restore: item -> (current raw, new raw).
     restore: Option<BTreeMap<u16, (Option<String>, String)>>,
     include_cat: bool,
@@ -32,20 +33,45 @@ impl Default for MenuState {
             num_edits: HashMap::new(),
             text_edits: HashMap::new(),
             path: format!("{home}/ftdx3000-menu-backup.txt"),
+            path_model: "ftdx3000",
             restore: None,
             include_cat: false,
         }
     }
 }
 
+/// The default backup file for a model.
+fn default_path(model: &RadioModel) -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    format!("{home}/{}-menu-backup.txt", model.key)
+}
+
 pub fn show(app: &mut App, ui: &mut Ui) {
     let rig = app.rig().clone();
+    let model = rig.model();
     let menu_vals = rig.state().menu.clone();
     let live = rig.link().is_open();
     let read = menu_vals.len();
+    let total = model.menu.len();
+    // A radio of another model: its own backup file, unless one was typed.
+    if app.menu.path_model != model.key {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        if app.menu.path.starts_with(&format!("{home}/")) && app.menu.path.ends_with("-menu-backup.txt") {
+            app.menu.path = default_path(model);
+        }
+        app.menu.path_model = model.key;
+        app.menu.restore = None;
+        app.menu.num_edits.clear();
+        app.menu.text_edits.clear();
+        app.menu.group = None;
+    }
+    if total == 0 {
+        ui.label(RichText::new(format!("RigHelm can't read or change the {}'s menu over CAT.", model.full_name())).color(AMBER));
+        return;
+    }
 
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("{read}/196 items read from the radio")).color(if read == 196 { crate::widgets::GREEN } else { AMBER }));
+        ui.label(RichText::new(format!("{read}/{total} items read from the {}", model.name)).color(if read >= total { crate::widgets::GREEN } else { AMBER }));
         if ui.add_enabled(live, egui::Button::new("Re-read all")).clicked() {
             rig.refresh_menu();
         }
@@ -57,13 +83,13 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         ui.label("Backup file");
         ui.add(egui::TextEdit::singleline(&mut app.menu.path).desired_width(360.0));
         if ui.add_enabled(read > 0, egui::Button::new("Save backup")).clicked() {
-            match save_backup(&PathBuf::from(&app.menu.path), &menu_vals) {
+            match save_backup(model, &PathBuf::from(&app.menu.path), &menu_vals) {
                 Ok(n) => app.flash(format!("saved {n} menu items to {}", app.menu.path)),
                 Err(e) => app.flash(format!("backup failed: {e}")),
             }
         }
         if ui.add_enabled(live, egui::Button::new("Restore…")).clicked() {
-            match load_backup(&PathBuf::from(&app.menu.path)) {
+            match load_backup(model, &PathBuf::from(&app.menu.path)) {
                 Ok(items) => {
                     let diff: BTreeMap<u16, (Option<String>, String)> = items
                         .into_iter()
@@ -84,7 +110,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     restore_dialog(app, ui);
 
     ui.separator();
-    let groups = menu::groups();
+    let groups = model.menu_groups();
     egui::Panel::left("menu_groups").resizable(false).exact_size(150.0).show(ui, |ui| {
         egui::ScrollArea::vertical().id_salt("groups").show(ui, |ui| {
             if ui.selectable_label(app.menu.group.is_none(), "All").clicked() {
@@ -98,7 +124,8 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         });
     });
     let filter = app.menu.filter.to_lowercase();
-    let items: Vec<&MenuItem> = MENU
+    let items: Vec<&MenuItem> = model
+        .menu
         .iter()
         .filter(|m| app.menu.group.is_none_or(|g| g == m.group))
         .filter(|m| filter.is_empty() || m.name.to_lowercase().contains(&filter) || format!("{:03}", m.num).contains(&filter))
@@ -243,6 +270,8 @@ fn restore_dialog(app: &mut App, ui: &mut Ui) {
         return;
     }
     let Some(diff) = app.menu.restore.clone() else { return };
+    let model = app.rig().model();
+    let cat_items = model.roles.cat_items;
     let mut open = true;
     let mut apply = false;
     egui::Window::new("Restore menu settings").collapsible(false).open(&mut open).default_width(520.0).show(ui.ctx(), |ui| {
@@ -250,9 +279,9 @@ fn restore_dialog(app: &mut App, ui: &mut Ui) {
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
             egui::Grid::new("restore").striped(true).show(ui, |ui| {
                 for (n, (cur, new)) in &diff {
-                    let item = menu::item(*n);
+                    let item = model.menu_item(*n);
                     let name = item.map(|i| i.name).unwrap_or("?");
-                    let cat = CAT_ITEMS.contains(n);
+                    let cat = cat_items.contains(n);
                     ui.label(RichText::new(format!("{n:03} {name}")).color(if cat && !app.menu.include_cat { DIM } else { egui::Color32::WHITE }));
                     ui.label(cur.as_deref().map(|r| item.map(|i| i.display(r)).unwrap_or(r.to_string())).unwrap_or("?".into()));
                     ui.label("→");
@@ -261,7 +290,10 @@ fn restore_dialog(app: &mut App, ui: &mut Ui) {
                 }
             });
         });
-        ui.checkbox(&mut app.menu.include_cat, "Also restore CAT settings (037-040) — may disconnect this program");
+        if !cat_items.is_empty() {
+            let list: Vec<String> = cat_items.iter().map(|n| format!("{n:03}")).collect();
+            ui.checkbox(&mut app.menu.include_cat, format!("Also restore CAT settings ({}) — may disconnect this program", list.join(", ")));
+        }
         ui.horizontal(|ui| {
             if ui.button(RichText::new("Write to radio").color(RED)).clicked() {
                 apply = true;
@@ -275,7 +307,7 @@ fn restore_dialog(app: &mut App, ui: &mut Ui) {
         let rig = app.rig().clone();
         let mut n = 0;
         // CAT settings last, so the rest is written before the link may change.
-        let (cat, rest): (Vec<_>, Vec<_>) = diff.iter().partition(|(k, _)| CAT_ITEMS.contains(k));
+        let (cat, rest): (Vec<_>, Vec<_>) = diff.iter().partition(|(k, _)| cat_items.contains(k));
         for (num, (_, raw)) in rest.into_iter().chain(cat.into_iter().filter(|_| app.menu.include_cat)) {
             rig.send(format!("EX{num:03}{raw};"));
             n += 1;
@@ -289,10 +321,10 @@ fn restore_dialog(app: &mut App, ui: &mut Ui) {
     }
 }
 
-fn save_backup(path: &PathBuf, vals: &BTreeMap<u16, String>) -> std::io::Result<usize> {
-    let mut out = String::from("# FTDX3000 menu backup (ftdx3000 rig control)\n# format: EXnnn=raw value\n");
+fn save_backup(model: &RadioModel, path: &PathBuf, vals: &BTreeMap<u16, String>) -> std::io::Result<usize> {
+    let mut out = format!("# {} menu backup (RigHelm)\n# radio: {}\n# format: EXnnn=raw value\n", model.full_name(), model.key);
     for (n, raw) in vals {
-        let item = menu::item(*n);
+        let item = model.menu_item(*n);
         out.push_str(&format!(
             "EX{n:03}={raw}    # {} {} = {}\n",
             item.map(|i| i.group).unwrap_or(""),
@@ -304,8 +336,15 @@ fn save_backup(path: &PathBuf, vals: &BTreeMap<u16, String>) -> std::io::Result<
     Ok(vals.len())
 }
 
-fn load_backup(path: &PathBuf) -> std::io::Result<BTreeMap<u16, String>> {
+fn load_backup(model: &RadioModel, path: &PathBuf) -> std::io::Result<BTreeMap<u16, String>> {
     let text = std::fs::read_to_string(path)?;
+    // A backup from another model would set the wrong items. Old backups
+    // without the line are the FTDX3000's.
+    let radio = text.lines().find_map(|l| l.strip_prefix("# radio: ")).map(str::trim).unwrap_or("ftdx3000");
+    if radio != model.key {
+        let other = ftdx3000_cat::model::by_key(radio).map_or(radio.to_string(), |m| m.full_name());
+        return Err(std::io::Error::other(format!("this backup is from a {other}, not the {}", model.full_name())));
+    }
     let mut out = BTreeMap::new();
     for line in text.lines() {
         let line = line.split('#').next().unwrap_or("").trim();
@@ -313,7 +352,7 @@ fn load_backup(path: &PathBuf) -> std::io::Result<BTreeMap<u16, String>> {
         let Some(n) = k.trim().strip_prefix("EX").and_then(|n| n.parse::<u16>().ok()) else { continue };
         let v = v.trim_end().to_string();
         // Keep spaces inside text values (MY CALL) but nothing that breaks framing.
-        if menu::item(n).is_some() && !v.contains(';') {
+        if model.menu_item(n).is_some() && !v.contains(';') {
             out.insert(n, v);
         }
     }

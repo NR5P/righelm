@@ -972,28 +972,32 @@ fn dsp_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
                     if m.has("BC") && led_button(ui, s.auto_notch, "DNF", AMBER) {
                         rig.send(format!("BC0{};", (!s.auto_notch) as u8));
                     }
-                    if m.has("BP") && led_button(ui, s.manual_notch, "NOTCH", AMBER) {
+                    if m.has_key("BP00") && led_button(ui, s.manual_notch, "NOTCH", AMBER) {
                         rig.send(format!("BP00{:03};", (!s.manual_notch) as u8));
                     }
                 });
                 ui.end_row();
             }
-            if m.has("BP") {
+            if m.has_key("BP01") {
                 slider(ui, rig, "Notch freq", s.notch_freq.max(1) as i32 * 10, 10..=4000, |v| format!("BP01{:03};", (v / 10).clamp(1, 400)));
             }
-            if m.has("CO") {
-                ui.label("Contour / APF");
+            if m.has_key("CO00") {
+                let contour = m.has_key("CO01");
+                ui.label(if contour { "Contour / APF" } else { "APF" });
                 ui.horizontal(|ui| {
                     for (c, l) in [(0, "OFF"), (1, "CONT"), (2, "APF")] {
+                        if c == 1 && !contour {
+                            continue;
+                        }
                         if ui.selectable_label(s.contour_mode == c, l).clicked() {
                             rig.send(format!("CO00{c:02};"));
                         }
                     }
                 });
                 ui.end_row();
-                if s.contour_mode == 2 {
+                if s.contour_mode == 2 && m.has_key("CO02") {
                     slider(ui, rig, "APF offset", (s.apf_freq as i32 - 25) * 10, -250..=250, |v| format!("CO02{:02};", (v / 10 + 25).clamp(0, 50)));
-                } else {
+                } else if contour {
                     slider(ui, rig, "Contour freq", s.contour_freq.max(1) as i32 * 100, 100..=4000, |v| format!("CO01{:02};", (v / 100).clamp(1, 40)));
                 }
             }
@@ -1019,10 +1023,8 @@ fn transmitter_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
                     if led_button(ui, s.processor, "PROC", AMBER) {
                         rig.send(format!("PR0{};", (!s.processor) as u8));
                     }
-                    if m.is_ftdx3000() || m.key.starts_with("ftdx") {
-                        if led_button(ui, s.mic_eq, "MIC EQ", AMBER) {
-                            rig.send(format!("PR1{};", (!s.mic_eq) as u8));
-                        }
+                    if m.has_key("PR1") && led_button(ui, s.mic_eq, "MIC EQ", AMBER) {
+                        rig.send(format!("PR1{};", (!s.mic_eq) as u8));
                     }
                 });
                 ui.end_row();
@@ -1045,7 +1047,7 @@ fn transmitter_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
             if m.has("VD") {
                 slider(ui, rig, "VOX delay (ms)", s.vox_delay.max(30) as i32, 30..=3000, |v| format!("VD{:04};", (v / 10) * 10));
             }
-            if m.has("ML") {
+            if m.has_key("ML0") {
                 ui.label("Monitor");
                 ui.horizontal(|ui| {
                     if led_button(ui, s.monitor, "MONI", AMBER) {
@@ -1053,6 +1055,8 @@ fn transmitter_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
                     }
                 });
                 ui.end_row();
+            }
+            if m.has_key("ML1") {
                 slider(ui, rig, "Monitor level", s.monitor_level.max(1) as i32, 1..=100, |v| format!("ML1{v:03};"));
             }
             if m.has("PB") && caps.voice_memories > 0 {

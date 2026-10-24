@@ -14,8 +14,8 @@ use crossbeam_channel::Receiver;
 use eframe::egui::{
     self, Align2, Color32, ColorImage, CornerRadius, FontId, Mesh, Pos2, Rect, RichText, Sense, Shape, Stroke, TextureHandle, TextureOptions, Ui, vec2,
 };
-use ftdx3000_cat::types::{BANDS, FREQ_MAX, FREQ_MIN, Mode};
-use ftdx3000_cat::{RadioState, set_freq_cmd};
+use ftdx3000_cat::types::Mode;
+use ftdx3000_cat::{RadioState, set_freq_cmd_for};
 use ftdx3000_rig::scope::{Detail, ScopeRow, ScopeStatus, ScopeSubscription, ScopeTap, ScopeView, Signal, level_db};
 use ftdx3000_rig::{Rig, UiPrefs};
 
@@ -227,7 +227,7 @@ fn target(s: &RadioState, signal: Option<Signal>, rf: f64) -> Option<Target> {
     };
     // CW tunes to the hertz; everything else to 10 Hz.
     let hz = if mode.is_cw() { hz.round() } else { (hz / 10.0).round() * 10.0 };
-    Some(Target { dial: (hz as i64).clamp(FREQ_MIN as i64, FREQ_MAX as i64) as u64, signal, how })
+    Some(Target { dial: s.model.clamp_freq((hz as i64).max(0) as u64), signal, how })
 }
 
 /// How far either side of the pointer to look for a signal.
@@ -400,7 +400,7 @@ fn pill(p: &egui::Painter, at: Pos2, anchor: Align2, text: &str, size: f32, colo
 
 /// Send the radio to `t`, and remember to fine-tune a CW zero-beat.
 fn tune(bs: &mut BandScope, rig: &Rig, s: &RadioState, t: &Target, audio_lines: u64) {
-    rig.send(set_freq_cmd(s.rx_on_b(), t.dial));
+    rig.send(set_freq_cmd_for(s.model, s.rx_on_b(), t.dial));
     let how = if t.how.is_empty() { String::new() } else { format!(" · {}", t.how) };
     bs.tuned = Some((format!("{}{how}", freq_text(t.dial as f64)), Instant::now()));
     bs.zero_beat = rx_vfo(s).filter(|(_, m)| m.is_cw() && t.signal.is_some()).map(|_| (audio_lines, Instant::now()));
@@ -518,7 +518,7 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
                 let err = (tone - pitch(s)).round() as i64;
                 if err.abs() >= 3 {
                     let err = if cw_upper(s, mode, dial) { err } else { -err };
-                    rig.send(set_freq_cmd(s.rx_on_b(), (dial as i64 + err).max(0) as u64));
+                    rig.send(set_freq_cmd_for(s.model, s.rx_on_b(), (dial as i64 + err).max(0) as u64));
                 }
             }
         } else {
@@ -675,7 +675,7 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
         }
 
         // Outside the amateur bands: dimmed. Band names in the corner.
-        let mut bands: Vec<(f64, f64, &str)> = BANDS.iter().filter(|b| b.code != 11).map(|b| (b.lo as f64, b.hi as f64, b.label)).collect();
+        let mut bands: Vec<(f64, f64, &str)> = s.model.bands.iter().filter(|b| b.label != "GEN").map(|b| (b.lo as f64, b.hi as f64, b.label)).collect();
         bands.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut x = start;
         for (lo, hi, _) in bands.iter().copied().chain(std::iter::once((f64::MAX, f64::MAX, ""))) {
@@ -870,15 +870,15 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
                 let i = SPANS.iter().position(|(hz, _)| *hz == prefs.scope_span).unwrap_or(4) as i64;
                 prefs.scope_span = SPANS[(i - ticks).clamp(0, SPANS.len() as i64 - 1) as usize].0;
             } else if let Some((dial, _)) = rx_vfo(s) {
-                let hz = (dial as i64 + ticks * tune_step).clamp(FREQ_MIN as i64, FREQ_MAX as i64) as u64;
-                rig.send(set_freq_cmd(s.rx_on_b(), hz));
+                let hz = s.model.clamp_freq((dial as i64 + ticks * tune_step).max(0) as u64);
+                rig.send(set_freq_cmd_for(s.model, s.rx_on_b(), hz));
             }
         }
         if resp.clicked() {
             if let Some(pos) = resp.interact_pointer_pos() {
                 let rf = hz_of(pos.x);
                 if shift {
-                    let hz = ((rf / 10.0).round() as u64 * 10).clamp(FREQ_MIN, FREQ_MAX);
+                    let hz = s.model.clamp_freq((rf / 10.0).round() as u64 * 10);
                     tune(bs, rig, s, &Target { dial: hz, signal: None, how: "" }, audio_lines);
                 } else if status.running {
                     let search = search_hz(col_hz);

@@ -86,29 +86,35 @@ impl LocalKeyLine {
     /// Opening a serial port raises RTS and DTR, which would key the radio,
     /// so PC KEYING (menu 065) is OFF while the port opens and RTS after.
     pub fn open(rig: &Rig, src: Source) -> Result<LocalKeyLine, String> {
+        let model = rig.model();
+        let Some((item, off, rts)) = model.roles.pc_keying else {
+            return Err(format!("RigHelm can't key the {} from the computer (no PC keying setting on RTS)", model.full_name()));
+        };
         let path = crate::detect::detect_radios()
             .into_iter()
             .find_map(|r| r.keying)
             .map(|p| p.stable_path().to_string())
             .ok_or("the radio's keying port (its Standard COM port) was not found")?;
+        let name = model.menu_item(item).map_or("PC KEYING", |i| i.name);
+        let read_cmd = ftdx3000_cat::menu::read_cmd(item);
         let read = |what: &str| {
-            rig.read("EX065;", Freshness::Radio, src.clone(), Duration::from_secs(2)).map_err(|e| format!("menu 065 PC KEYING ({what}): {e}"))
+            rig.read(&read_cmd, Freshness::Radio, src.clone(), Duration::from_secs(2)).map_err(|e| format!("menu {item:03} {name} ({what}): {e}"))?;
+            Ok::<Option<i32>, String>(crate::txaudio::menu_code(rig, item))
         };
         let before = read("read")?;
-        rig.send_from("EX0650;", src.clone());
-        if read("off")? != "EX0650;" {
-            return Err("the radio did not accept menu 065 PC KEYING = OFF".into());
+        rig.send_from(crate::txaudio::menu_cmd(rig, item, off), src.clone());
+        if read("off")? != Some(off) {
+            return Err(format!("the radio did not accept menu {item:03} {name} = OFF"));
         }
         let mut port = serialport::new(&path, 9600).timeout(Duration::from_millis(100)).open().map_err(|e| format!("keying port {path}: {e}"))?;
         port.write_request_to_send(false).map_err(|e| format!("keying port {path}: {e}"))?;
         let _ = port.write_data_terminal_ready(false);
-        let mut line = LocalKeyLine { port, rig: rig.clone(), src: src.clone(), restore: Some(before.clone()) };
-        rig.send_from("EX0652;", src.clone());
-        if read("RTS")? != "EX0652;" {
-            return Err("the radio did not accept menu 065 PC KEYING = RTS".into());
-        }
-        if before == "EX0652;" {
+        let restore = before.filter(|&b| b != rts).map(|b| crate::txaudio::menu_cmd(rig, item, b));
+        let mut line = LocalKeyLine { port, rig: rig.clone(), src: src.clone(), restore };
+        rig.send_from(crate::txaudio::menu_cmd(rig, item, rts), src.clone());
+        if read("RTS")? != Some(rts) {
             line.restore = None;
+            return Err(format!("the radio did not accept menu {item:03} {name} = RTS"));
         }
         Ok(line)
     }

@@ -734,7 +734,7 @@ fn serve_cat(rig: &Rig, cfg: &RemoteServerConfig, stream: TcpStream, mut reader:
     let connected = Arc::new(AtomicBool::new(true));
     let session_stop = Arc::new(AtomicBool::new(false));
     let _pusher = vport::ai_pusher(rig.clone(), writer.clone(), client.clone(), connected.clone(), session_stop.clone(), || {})?;
-    let vcfg = VirtualPortConfig { name: who.into(), label: who.into(), enabled: true, block_tx: !tx_allowed(cfg), com_port: String::new() };
+    let vcfg = VirtualPortConfig { name: who.into(), label: who.into(), enabled: true, block_tx: !tx_allowed(cfg), com_port: String::new(), emulate: "ftdx3000".into() };
     let source = Source::Client(who.into());
     let mut framer = Framer::new();
     let mut buf = [0u8; 1024];

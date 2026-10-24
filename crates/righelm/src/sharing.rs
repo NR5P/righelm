@@ -7,7 +7,8 @@ use eframe::egui::{self, ComboBox, RichText, Ui};
 use ftdx3000_rig::detect::{self, SerialPortEntry};
 #[cfg(unix)]
 use ftdx3000_rig::pty;
-use ftdx3000_rig::transport::{BAUD_RATES, FlowControl};
+use ftdx3000_cat::model::Maker;
+use ftdx3000_rig::transport::FlowControl;
 use ftdx3000_rig::vport::VirtualPortConfig;
 use ftdx3000_rig::{Config, EngineConfig};
 
@@ -81,12 +82,15 @@ pub fn show(app: &mut App, ui: &mut Ui) {
 fn radio_section(app: &mut App, ui: &mut Ui) {
     section(ui, "Detected radio", |ui| {
         if app.radios.is_empty() {
-            ui.label(RichText::new("No FTDX3000 found on USB (looking for its Silicon Labs CP2105 bridge). Is the radio's USB cable plugged in?").color(AMBER));
+            ui.label(
+                RichText::new("No radio found on USB (looking for the Silicon Labs, Icom or FTDI USB bridges radios use). Is the radio's USB cable plugged in? A radio on an RS-232 adapter can be chosen below.")
+                    .color(AMBER),
+            );
         }
         for r in app.radios.clone() {
-            ui.label(RichText::new(format!("FTDX3000 on USB {} — serial {}", r.usb_path, r.serial_number.as_deref().unwrap_or("?"))).strong());
+            ui.label(RichText::new(format!("{} on USB {} ({}) — serial {}", r.title(), r.usb_path, r.bridge, r.serial_number.as_deref().unwrap_or("?"))).strong());
             egui::Grid::new(("radio", r.usb_path.clone())).num_columns(3).spacing([12.0, 4.0]).show(ui, |ui| {
-                ui.label("CAT (Enhanced COM)");
+                ui.label(if r.bridge == "CP2105" { "CAT (Enhanced COM)" } else { "CAT" });
                 ui.label(RichText::new(&r.cat.dev).monospace());
                 ui.horizontal(|ui| {
                     copy_button(ui, r.cat.stable_path());
@@ -139,15 +143,46 @@ fn radio_section(app: &mut App, ui: &mut Ui) {
                     }
                 }
             });
-            ui.label(RichText::new("In WSJT-X/fldigi pick the audio devices named above (PCM2903B / \"USB Audio CODEC\") for input and output.").weak());
+            ui.label(RichText::new("In WSJT-X/fldigi pick the audio devices named above (often \"USB Audio CODEC\") for input and output.").weak());
         }
     });
 }
 
 fn cat_section(app: &mut App, ui: &mut Ui) {
     let st = &mut app.sharing;
+    let connected_model = app.services.rig.model();
+    let connected = app.services.rig.link().is_open();
     section(ui, "CAT connection", |ui| {
         egui::Grid::new("cat").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Radio");
+            ui.horizontal(|ui| {
+                let chosen = st.engine.wanted_model();
+                let text = chosen.map_or("Auto-detect".to_string(), |m| m.full_name());
+                ComboBox::from_id_salt("model").width(220.0).selected_text(text).show_ui(ui, |ui| {
+                    if ui.selectable_label(chosen.is_none(), "Auto-detect").clicked() {
+                        st.engine.model.clear();
+                    }
+                    for maker in [Maker::Yaesu, Maker::Icom, Maker::Kenwood, Maker::Elecraft] {
+                        let models: Vec<_> = ftdx3000_cat::model::all().iter().filter(|m| m.maker == maker).collect();
+                        if models.is_empty() {
+                            continue;
+                        }
+                        ui.separator();
+                        ui.label(RichText::new(maker.name()).weak());
+                        for m in models {
+                            if ui.selectable_label(chosen == Some(*m), m.full_name()).clicked() {
+                                st.engine.model = m.key.to_string();
+                            }
+                        }
+                    }
+                });
+                if connected {
+                    ui.label(RichText::new(format!("connected: {}", connected_model.full_name())).color(CYAN));
+                }
+            })
+            .response
+            .on_hover_text("Auto-detect asks the radio who it is. Choose the model if it isn't found, or if several share an answer (the Elecraft K3, KX3, KX2 and K4 all answer as a TS-570).");
+            ui.end_row();
             ui.label("Port");
             ui.horizontal(|ui| {
                 ComboBox::from_id_salt("catport").width(420.0).selected_text(if st.engine.serial.path.is_empty() { "(choose)" } else { &st.engine.serial.path }).show_ui(ui, |ui| {
@@ -173,7 +208,7 @@ fn cat_section(app: &mut App, ui: &mut Ui) {
             ui.label("Baud rate");
             ComboBox::from_id_salt("baud").selected_text(if st.engine.serial.baud == 0 { "Auto-detect".to_string() } else { st.engine.serial.baud.to_string() }).show_ui(ui, |ui| {
                 ui.selectable_value(&mut st.engine.serial.baud, 0, "Auto-detect");
-                for b in BAUD_RATES {
+                for b in [4800, 9600, 19200, 38400, 57600, 115200] {
                     ui.selectable_value(&mut st.engine.serial.baud, b, b.to_string());
                 }
             });
@@ -182,6 +217,8 @@ fn cat_section(app: &mut App, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut st.engine.serial.flow, FlowControl::Hardware, "RTS/CTS");
                 ui.selectable_value(&mut st.engine.serial.flow, FlowControl::None, "None (RTS held on)");
+                ui.selectable_value(&mut st.engine.serial.flow, FlowControl::Quiet, "None (RTS/DTR off)")
+                    .on_hover_text("For radios that can key the transmitter or send CW on RTS/DTR of the CAT port (Icom, Kenwood). Icom radios always use this.");
                 ui.label(RichText::new("auto-detect tries both").weak());
             });
             ui.end_row();
@@ -194,8 +231,14 @@ fn cat_section(app: &mut App, ui: &mut Ui) {
             ui.label("Options");
             ui.vertical(|ui| {
                 ui.checkbox(&mut st.engine.auto_info, "Auto information (radio reports front-panel changes instantly)");
-                ui.checkbox(&mut st.engine.read_menu_on_connect, "Read all 196 menu items after connecting");
-                ui.checkbox(&mut st.engine.set_cat_tot, "Set CAT TIME OUT TIMER (menu 039) to 100 ms after connecting");
+                let m = st.engine.wanted_model().unwrap_or(connected_model);
+                ui.checkbox(&mut st.engine.read_menu_on_connect, format!("Read all {} menu items after connecting", m.menu.len()));
+                match m.roles.cat_tot.and_then(|(item, _)| m.menu_item(item).map(|i| (item, i.name))) {
+                    Some((item, name)) => {
+                        ui.checkbox(&mut st.engine.set_cat_tot, format!("Set {name} (menu {item:03}) to 100 ms after connecting"));
+                    }
+                    None => {}
+                }
             });
             ui.end_row();
             ui.label("Polling");
@@ -223,21 +266,32 @@ fn cat_section(app: &mut App, ui: &mut Ui) {
             }
             ui.checkbox(&mut app.services.config.auto_connect, "Connect at start-up");
         });
-        ui.label(RichText::new("Radio side: menu 037 CAT SELECT = USB, 038 CAT RATE = 38400 recommended. This program opens the port exclusively; other programs share the radio through the ports below.").weak());
+        let hint = if connected_model.is_ftdx3000() {
+            "Radio side: menu 037 CAT SELECT = USB, 038 CAT RATE = 38400 recommended. "
+        } else if connected_model.family == ftdx3000_cat::Family::Icom {
+            "Radio side: CI-V USB port = Unlink from [REMOTE], CI-V Transceive = ON. "
+        } else {
+            ""
+        };
+        ui.label(RichText::new(format!("{hint}This program opens the port exclusively; other programs share the radio through the ports below.")).weak());
     });
 }
 
 fn vport_section(app: &mut App, ui: &mut Ui) {
     let status = app.services.port_status();
     let dir = app.services.config.link_dir();
+    let radio = app.services.rig.model();
     section(ui, "Virtual CAT ports (share the radio)", |ui| {
-        ui.label("Each port is a virtual serial cable that looks exactly like an FTDX3000. Point WSJT-X, fldigi, a logger, CW Skimmer, etc. at a port; all of them can run at once.");
+        ui.label(format!(
+            "Each port is a virtual serial cable that looks exactly like the radio ({}). Point WSJT-X, fldigi, a logger, CW Skimmer, etc. at a port; all of them can run at once.",
+            radio.full_name()
+        ));
         ui.add_space(4.0);
         let st = &mut app.sharing;
         let mut remove = None;
-        egui::Grid::new("vports").num_columns(7).striped(true).spacing([10.0, 6.0]).show(ui, |ui| {
+        egui::Grid::new("vports").num_columns(8).striped(true).spacing([10.0, 6.0]).show(ui, |ui| {
             let path_header = if cfg!(windows) { "com0com port RigHelm opens (programs use its partner)" } else { "Path (use this in the other program)" };
-            for h in ["On", "Name", "Used by", path_header, "Status", "Block TX", ""] {
+            for h in ["On", "Name", "Used by", path_header, "Programs see", "Status", "Block TX", ""] {
                 ui.label(RichText::new(h).strong());
             }
             ui.end_row();
@@ -255,6 +309,17 @@ fn vport_section(app: &mut App, ui: &mut Ui) {
                         copy_button(ui, &path);
                     }
                 });
+                let seen = p.seen_as(radio);
+                ComboBox::from_id_salt(("seen", i)).width(130.0).selected_text(seen.name).show_ui(ui, |ui| {
+                    if !radio.is_ftdx3000() {
+                        ui.selectable_value(&mut p.emulate, String::new(), format!("{} (the radio)", radio.name));
+                    } else {
+                        ui.selectable_value(&mut p.emulate, String::new(), "the radio");
+                    }
+                    ui.selectable_value(&mut p.emulate, "ftdx3000".to_string(), "FTDX3000");
+                })
+                .response
+                .on_hover_text("Programs on this port see the radio as it is (choose it in the program), or an FTDX3000 whatever the radio (for programs set up for the FTDX3000)");
                 match status.iter().find(|(c, _)| c.name == p.name) {
                     Some((_, Ok(s))) => {
                         if s.client_connected {
@@ -298,9 +363,11 @@ fn vport_section(app: &mut App, ui: &mut Ui) {
             }
         });
         ui.collapsing("How to set up other programs", |ui| {
-            ui.label("WSJT-X / JTDX:  Settings → Radio → Rig: Yaesu FTDX-3000, Serial port: a path above (type it in), Baud: any, Data/Stop bits: default, Handshake: None, PTT method: CAT.");
-            ui.label("fldigi:  Configure → Rig control → Hamlib → Rig: FTDX-3000, Device: a path above, PTT via Hamlib command.");
-            ui.label("flrig:  Transceiver: FTdx3000, Serial port: a path above.");
+            let rig = format!("{} {}", radio.maker.name(), radio.name);
+            ui.label(format!("WSJT-X / JTDX:  Settings → Radio → Rig: {rig} (or Yaesu FTDX-3000 for a port that shows an FTDX3000), Serial port: a path above (type it in), Baud: any, Data/Stop bits: default, Handshake: None, PTT method: CAT."));
+            ui.label(format!("fldigi:  Configure → Rig control → Hamlib → Rig: {}, Device: a path above, PTT via Hamlib command.", radio.name));
+            ui.label(format!("flrig:  Transceiver: {}, Serial port: a path above.", radio.name));
+            ui.label("Any program with Hamlib: \"Hamlib NET rigctl\" at 127.0.0.1:4532 (below) works for every radio, with no port at all.");
             ui.label("Wine programs (N1MM, CW Skimmer, Log4OM...): map a COM port below, then choose that COM port in the program.");
             ui.label("PTT: virtual ports carry CAT only. Use CAT PTT (TX1;) in other programs — RTS/DTR on a virtual port does nothing.");
         });

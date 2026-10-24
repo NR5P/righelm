@@ -1,4 +1,5 @@
-//! Memory channels 001-099 and the PMS pairs P-1L..P-9U (100-117).
+//! Memory channels (on the FTDX3000 001-099 and the PMS pairs P-1L..P-9U,
+//! 100-117; other radios have their own range).
 
 use eframe::egui::{self, RichText, Ui};
 use ftdx3000_cat::ChannelInfo;
@@ -8,8 +9,8 @@ use crate::App;
 use crate::widgets::{self, AMBER, DIM};
 
 pub struct MemoriesState {
-    /// Channels were requested from the radio this session.
-    requested: bool,
+    /// Channels were requested from this model's radio this session.
+    requested: Option<&'static str>,
     show_empty: bool,
     csv_path: String,
     confirm_write: Option<u16>,
@@ -18,29 +19,33 @@ pub struct MemoriesState {
 impl Default for MemoriesState {
     fn default() -> Self {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        Self { requested: false, show_empty: false, csv_path: format!("{home}/ftdx3000-memories.csv"), confirm_write: None }
+        Self { requested: None, show_empty: false, csv_path: format!("{home}/ftdx3000-memories.csv"), confirm_write: None }
     }
 }
 
-pub fn channel_name(ch: u16) -> String {
-    if ch >= 100 {
-        let pair = (ch - 100) / 2 + 1;
-        format!("P-{pair}{}", if ch % 2 == 0 { 'L' } else { 'U' })
-    } else {
-        format!("{ch:03}")
-    }
+/// An FTDX3000 channel's name (`005`, `P-1L`).
+#[cfg(test)]
+fn channel_name(ch: u16) -> String {
+    ftdx3000_cat::model::FTDX3000.caps.memory.name(ch)
 }
 
 pub fn show(app: &mut App, ui: &mut Ui) {
     let rig = app.rig().clone();
     let s = rig.state().clone();
+    let model = s.model;
+    let mem = model.caps.memory;
+    let name = |ch: u16| mem.name(ch);
+    if !model.has("MR") {
+        ui.label(RichText::new(format!("RigHelm can't read the {}'s memory channels over CAT.", model.full_name())).color(AMBER));
+        return;
+    }
     let live = rig.link().is_open();
-    let auto = live && !app.memories.requested && s.memories.is_empty();
+    let auto = live && app.memories.requested != Some(model.key) && s.memories.is_empty();
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("{} channels read", s.memories.len())).color(AMBER));
         if ui.add_enabled(live, egui::Button::new("Read all channels")).clicked() || auto {
-            app.memories.requested = true;
-            let cmds: Vec<String> = (1..=117).map(|c| format!("MR{c:03};")).collect();
+            app.memories.requested = Some(model.key);
+            let cmds: Vec<String> = mem.channels().map(|c| format!("MR{c:03};")).collect();
             let refs: Vec<&str> = cmds.iter().map(String::as_str).collect();
             rig.refresh(&refs);
         }
@@ -53,7 +58,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             for (ch, m) in &s.memories {
                 out.push_str(&format!(
                     "{},{},{},{},{},{},{},{},{}\n",
-                    channel_name(*ch),
+                    name(*ch),
                     m.freq,
                     m.mode.map(|m| m.label()).unwrap_or(""),
                     m.clar_offset,
@@ -70,7 +75,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             }
         }
     });
-    ui.label(RichText::new(format!("Current channel: {}   ·   VFO-A {} {}", channel_name(s.memory_channel), widgets::format_freq(s.freq_a), s.mode_a.map(|m| m.label()).unwrap_or(""))).weak());
+    ui.label(RichText::new(format!("Current channel: {}   ·   VFO-A {} {}", name(s.memory_channel), widgets::format_freq(s.freq_a), s.mode_a.map(|m| m.label()).unwrap_or(""))).weak());
     ui.separator();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         egui::Grid::new("mem").num_columns(7).striped(true).spacing([14.0, 5.0]).show(ui, |ui| {
@@ -78,13 +83,13 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 ui.label(RichText::new(h).strong());
             }
             ui.end_row();
-            for ch in 1..=117u16 {
+            for ch in mem.channels() {
                 let m = s.memories.get(&ch);
                 if m.is_none() && !app.memories.show_empty {
                     continue;
                 }
                 let cur = s.memory_channel == ch;
-                ui.label(RichText::new(channel_name(ch)).monospace().color(if cur { AMBER } else { egui::Color32::WHITE }));
+                ui.label(RichText::new(name(ch)).monospace().color(if cur { AMBER } else { egui::Color32::WHITE }));
                 match m {
                     Some(m) => {
                         ui.label(RichText::new(widgets::format_freq(m.freq)).monospace().size(15.0));
@@ -106,15 +111,18 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     }
                 }
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(live && m.is_some(), egui::Button::new("Recall").small()).on_hover_text("Select this channel (memory mode)").clicked() {
+                    if model.has("MC") && ui.add_enabled(live && m.is_some(), egui::Button::new("Recall").small()).on_hover_text("Select this channel (memory mode)").clicked() {
                         rig.send(format!("MC{ch:03};"));
                     }
-                    if ui.add_enabled(live && m.is_some(), egui::Button::new("▸ VFO-A").small()).on_hover_text("Copy this channel into VFO-A").clicked() {
+                    if model.has("MA") && ui.add_enabled(live && m.is_some(), egui::Button::new("▸ VFO-A").small()).on_hover_text("Copy this channel into VFO-A").clicked() {
                         rig.send(format!("MC{ch:03};MA;"));
                         rig.send("VS0;");
                     }
                 });
                 ui.horizontal(|ui| {
+                    if !model.has("MW") {
+                        return;
+                    }
                     if app.memories.confirm_write == Some(ch) {
                         if ui.add(egui::Button::new(RichText::new("Overwrite?").color(crate::widgets::RED)).small()).clicked() {
                             let info = ChannelInfo { freq: s.freq_a, mode: s.mode_a, ..s.info_a.clone() };

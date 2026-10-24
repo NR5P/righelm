@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, Color32, RichText, Slider, Ui};
 use ftdx3000_rig::audio::{self, DeviceEntry};
-use ftdx3000_rig::txaudio::{self, MIC_SEL_MENUS, MIC_SEL_USB};
+use ftdx3000_rig::txaudio;
 
 use crate::App;
 use crate::widgets::{self, AMBER, DIM, GREEN, RED};
@@ -81,17 +81,23 @@ fn mic_sel_line(app: &App, ui: &mut Ui, computer: bool) {
         ui.label(RichText::new("The radio is not connected: its mic setting will be changed when it connects.").color(DIM));
         return;
     }
+    let model = rig.model();
+    let roles = model.roles;
+    if roles.mic_sel.is_empty() {
+        ui.label(RichText::new(format!("RigHelm doesn't know which {} setting picks the USB audio input: set it on the radio.", model.name)).color(AMBER));
+        return;
+    }
     let mut parts = Vec::new();
     let mut matches = true;
-    for (menu, mode) in MIC_SEL_MENUS.iter().zip(["AM", "FM", "SSB"]) {
-        let v = txaudio::mic_sel(rig, *menu);
-        let label = match v {
-            Some(0) => "FRONT",
-            Some(1) => "DATA",
-            Some(2) => "USB",
-            _ => "…",
+    for &menu in roles.mic_sel {
+        let v = txaudio::mic_sel(rig, menu);
+        let item = model.menu_item(menu);
+        let label = match (v, item) {
+            (Some(v), Some(i)) => i.options().into_iter().find(|o| o.0 == v).map_or(v.to_string(), |o| o.1),
+            _ => "…".to_string(),
         };
-        matches &= v.is_some_and(|v| (v == MIC_SEL_USB) == computer);
+        let mode = item.map_or(String::new(), |i| i.group.trim_start_matches("MODE-").to_string());
+        matches &= v.is_some_and(|v| (v == roles.mic_usb) == computer);
         parts.push(format!("{mode} {label}"));
     }
     let text = format!("Radio MIC SEL: {}", parts.join(" · "));
@@ -298,7 +304,7 @@ fn about(app: &App, ui: &mut Ui) {
             ui.add(egui::Image::new(&app.logo).fit_to_exact_size(egui::vec2(96.0, 96.0)));
             ui.vertical(|ui| {
                 ui.label(RichText::new("RigHelm").strong().size(28.0).color(AMBER));
-                ui.label(RichText::new(format!("The Linux alternative to Win4Yaesu for the Yaesu FTDX3000 · version {}", env!("CARGO_PKG_VERSION"))).size(14.0));
+                ui.label(RichText::new(format!("The Linux alternative to Win4Yaesu for the Yaesu FTDX3000 — and other Yaesu, Icom, Kenwood and Elecraft radios · version {}", env!("CARGO_PKG_VERSION"))).size(14.0));
                 ui.label(RichText::new("At the helm of your rig: control, sharing and remote operation.").color(DIM));
                 ui.label(RichText::new(format!("Settings file: {}", ftdx3000_rig::Config::path().display())).color(DIM));
             });

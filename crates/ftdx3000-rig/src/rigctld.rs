@@ -14,7 +14,7 @@ use std::thread;
 use std::time::Duration;
 
 use ftdx3000_cat::types::{self, CTCSS_DHZ, Meter, WidthClass, interpolate};
-use ftdx3000_cat::{Mode, RadioState};
+use ftdx3000_cat::{Mode, RadioModel, RadioState};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{CatError, Freshness, Rig, Source};
@@ -54,8 +54,7 @@ const MODE_PKTLSB: u64 = 1 << 10;
 const MODE_PKTUSB: u64 = 1 << 11;
 const MODE_PKTFM: u64 = 1 << 12;
 const MODE_FMN: u64 = 1 << 21;
-const ALL_MODES: u64 = MODE_AM | MODE_CW | MODE_USB | MODE_LSB | MODE_RTTY | MODE_FM | MODE_CWR | MODE_RTTYR
-    | MODE_PKTLSB | MODE_PKTUSB | MODE_PKTFM | MODE_FMN;
+const MODE_WFM: u64 = 1 << 6;
 const SSB_MODES: u64 = MODE_USB | MODE_LSB | MODE_PKTLSB | MODE_PKTUSB;
 const CW_MODES: u64 = MODE_CW | MODE_CWR | MODE_RTTY | MODE_RTTYR;
 const VFO_AB: u32 = 0b11;
@@ -370,10 +369,10 @@ impl Session {
                 let Some(f) = num(0) else { return Out::Err(EINVAL) };
                 let s = self.state();
                 let f = f.round() as u64;
-                if !(types::FREQ_MIN..=types::FREQ_MAX).contains(&f) {
+                if !s.model.in_range(f) {
                     return Out::Err(EINVAL);
                 }
-                self.send(&ftdx3000_cat::set_freq_cmd(s.rx_on_b(), f))
+                self.send(&ftdx3000_cat::set_freq_cmd_for(s.model, s.rx_on_b(), f))
             }
             "get_mode" => match self.refresh(&["MD0;", "NA0;", "SH0;"]) {
                 Ok(s) => {
@@ -393,7 +392,7 @@ impl Session {
                     }
                 }
                 // Mode change may change the width table; use the target mode's.
-                for c in width_cmds(s.width_class(mode), width) {
+                for c in width_cmds_for(s.model, s.width_class(mode), width) {
                     self.send(&c);
                 }
                 Out::Ok
@@ -605,7 +604,7 @@ impl Session {
             "set_vfo_opt" => Out::Ok,
             "get_lock_mode" => Out::Values(vec![("Locked", "0".into())]),
             "set_lock_mode" => Out::Ok,
-            "dump_state" => Out::Raw(dump_state(self.chk_vfo)),
+            "dump_state" => Out::Raw(dump_state(self.rig.model(), self.chk_vfo)),
             "get_info" => Out::Values(vec![("Info", "Yaesu FTDX-3000 via ftdx3000 rig control".into())]),
             "send_morse" => Out::Err(ENIMPL),
             "quit" | "q" | "Q" => Out::Quit,
@@ -631,7 +630,10 @@ impl Session {
             "KEYSPD" => read("KS;")?.key_speed.to_string(),
             "CWPITCH" => (300 + 10 * read("KP;")?.key_pitch as u32).to_string(),
             "PREAMP" => (read("PA0;")?.preamp as u32 * 10).to_string(),
-            "ATT" => (read("RA0;")?.att as u32 * 6).to_string(),
+            "ATT" => {
+                let s = read("RA0;")?;
+                s.model.caps.att.iter().find(|a| a.0 == s.att).map_or(0, |a| label_db(a.1)).to_string()
+            }
             "AGC" => match read("GT0;")?.agc {
                 0 => 0,
                 1 => 2,
@@ -682,8 +684,16 @@ impl Session {
             "VOXDELAY" => format!("VD{:04};", ((v * 100.0) as u32).clamp(30, 3000)),
             "KEYSPD" => format!("KS{:03};", (v as u32).clamp(4, 60)),
             "CWPITCH" => format!("KP{:02};", ((v as u32).clamp(300, 1050) - 300) / 10),
-            "PREAMP" => format!("PA0{};", match v as u32 { 0 => 0, 1..=15 => 1, _ => 2 }),
-            "ATT" => format!("RA0{};", ((v.clamp(0.0, 18.0) as u32 + 3) / 6).min(3)),
+            "PREAMP" => {
+                let top = self.rig.model().caps.preamp.iter().map(|p| p.0).max().unwrap_or(0) as u32;
+                format!("PA0{};", match v as u32 { 0 => 0, 1..=15 => 1, _ => 2 }.min(top))
+            }
+            "ATT" => {
+                // The nearest step the radio has.
+                let att = self.rig.model().caps.att;
+                let code = att.iter().min_by_key(|a| (label_db(a.1) as i64 - v.round() as i64).abs()).map_or(0, |a| a.0);
+                format!("RA0{code};")
+            }
             "AGC" => format!("GT0{};", match v as u32 { 0 => 0, 1 | 2 => 1, 5 => 2, 3 => 3, _ => 4 }),
             "IF" => {
                 let hz = (v as i32).clamp(-1000, 1000);
@@ -715,6 +725,30 @@ impl Session {
     }
 }
 
+/// Hamlib mode bits of the modes a radio has.
+fn model_modes(model: &RadioModel) -> u64 {
+    model
+        .modes
+        .iter()
+        .map(|m| match m {
+            Mode::Am | Mode::AmN => MODE_AM,
+            Mode::Cw => MODE_CW,
+            Mode::Usb => MODE_USB,
+            Mode::Lsb => MODE_LSB,
+            Mode::RttyLsb => MODE_RTTY,
+            Mode::Fm => MODE_FM,
+            Mode::CwR => MODE_CWR,
+            Mode::RttyUsb => MODE_RTTYR,
+            Mode::DataLsb => MODE_PKTLSB,
+            Mode::DataUsb => MODE_PKTUSB,
+            Mode::DataFm | Mode::DataFmN => MODE_PKTFM,
+            Mode::FmN => MODE_FMN,
+            Mode::Wfm => MODE_WFM,
+            _ => 0,
+        })
+        .fold(0, |a, b| a | b)
+}
+
 fn func_cmd(func: &str, on: bool) -> Option<String> {
     let b = on as u8;
     Some(match func {
@@ -744,8 +778,37 @@ fn passband(s: &RadioState, mode: Mode) -> u32 {
             Mode::FmN => 9000,
             _ => if s.narrow { 9000 } else { 16000 },
         },
-        class => types::width_hz(class, s.narrow, s.width_index).unwrap_or(if class == WidthClass::Ssb { 2400 } else { 500 }),
+        class => s.model.width_hz(class, s.narrow, s.width_index).unwrap_or(if class == WidthClass::Ssb { 2400 } else { 500 }),
     }
+}
+
+/// The decibels in an attenuator label ("12", "20 dB", "OFF" = 0).
+fn label_db(label: &str) -> u32 {
+    label.split(|c: char| !c.is_ascii_digit()).find(|t| !t.is_empty()).and_then(|t| t.parse().ok()).unwrap_or(0)
+}
+
+/// [`width_cmds`] for any radio: its own width table, and the narrow
+/// switch only where it has one.
+pub fn width_cmds_for(model: &RadioModel, class: WidthClass, width: i64) -> Vec<String> {
+    if model.is_ftdx3000() {
+        return width_cmds(class, width);
+    }
+    if width < 0 || class == WidthClass::Fixed || !model.has("SH") {
+        return Vec::new();
+    }
+    let narrow_switch = model.caps.narrow && model.has("NA");
+    let narrow_max = if class == WidthClass::Ssb { 1800 } else { 500 };
+    let narrow = narrow_switch && width > 0 && width as u32 <= narrow_max;
+    let mut choices: Vec<(u8, u32)> = (model.caps.widths)(class, narrow).into_iter().filter(|(i, w)| *w != 0 && (!narrow_switch || *i != 0)).collect();
+    choices.sort_by_key(|(_, w)| *w);
+    let want = if width == 0 { if class == WidthClass::Ssb { 2400 } else { 500 } } else { width };
+    let Some(best) = choices.iter().find(|(_, w)| *w as i64 >= want).or(choices.last()).map(|(i, _)| *i) else { return Vec::new() };
+    let mut out = Vec::new();
+    if narrow_switch {
+        out.push(format!("NA0{};", narrow as u8));
+    }
+    out.push(format!("SH0{best:02};"));
+    out
 }
 
 /// Commands to select the closest width (Hamlib semantics:
@@ -771,29 +834,28 @@ pub fn width_cmds(class: WidthClass, width: i64) -> Vec<String> {
     vec![format!("NA0{};", narrow as u8), format!("SH0{best:02};")]
 }
 
-fn dump_state(protocol1: bool) -> String {
+fn dump_state(model: &RadioModel, protocol1: bool) -> String {
     let mut s = String::new();
     let mut l = |t: &str| {
         s.push_str(t);
         s.push('\n');
     };
+    let all_modes = model_modes(model);
     l("1"); // protocol version
-    l("1037"); // RIG_MODEL_FTDX3000
+    l(&model.hamlib.to_string()); // the radio's Hamlib model (1037: FTDX3000)
     l("0"); // ITU region (deprecated)
-    l(&format!("30000 60000000 0x{ALL_MODES:x} -1 -1 0x{VFO_AB:x} 0x0"));
+    l(&format!("{} {} 0x{all_modes:x} -1 -1 0x{VFO_AB:x} 0x0", model.freq_min, model.freq_max));
     l("0 0 0 0 0 0 0");
-    for (lo, hi) in [(1_800_000, 2_000_000), (3_500_000, 4_000_000), (5_250_000, 5_450_000), (7_000_000, 7_300_000),
-        (10_100_000, 10_150_000), (14_000_000, 14_350_000), (18_068_000, 18_168_000), (21_000_000, 21_450_000),
-        (24_890_000, 24_990_000), (28_000_000, 29_700_000), (50_000_000, 54_000_000)]
-    {
-        l(&format!("{lo} {hi} 0x{:x} 5000 100000 0x{VFO_AB:x} 0x0", ALL_MODES & !MODE_AM));
-        l(&format!("{lo} {hi} 0x{MODE_AM:x} 5000 25000 0x{VFO_AB:x} 0x0"));
+    let (lo_w, hi_w) = (model.caps.power.0 as u32 * 1000, model.caps.power.1 as u32 * 1000);
+    for (lo, hi) in model.bands.iter().filter(|b| b.label != "GEN").map(|b| (b.lo, b.hi)) {
+        l(&format!("{lo} {hi} 0x{:x} {lo_w} {hi_w} 0x{VFO_AB:x} 0x0", all_modes & !MODE_AM));
+        l(&format!("{lo} {hi} 0x{:x} {lo_w} {} 0x{VFO_AB:x} 0x0", all_modes & MODE_AM, hi_w / 4));
     }
     l("0 0 0 0 0 0 0");
     l(&format!("0x{:x} 1", SSB_MODES | CW_MODES));
-    l(&format!("0x{:x} 10", ALL_MODES));
-    l(&format!("0x{:x} 100", ALL_MODES));
-    l(&format!("0x{:x} 1000", ALL_MODES));
+    l(&format!("0x{all_modes:x} 10"));
+    l(&format!("0x{all_modes:x} 100"));
+    l(&format!("0x{all_modes:x} 1000"));
     l("0 0");
     for (m, w) in [(SSB_MODES, 2400), (SSB_MODES, 1800), (SSB_MODES, 3000), (CW_MODES, 500), (CW_MODES, 2400),
         (CW_MODES, 250), (MODE_AM, 9000), (MODE_AM, 6000), (MODE_FM | MODE_PKTFM, 16000), (MODE_FM | MODE_PKTFM | MODE_FMN, 9000)]
@@ -805,8 +867,10 @@ fn dump_state(protocol1: bool) -> String {
     l("9999");
     l("1000");
     l("0");
-    l("10 20 ");
-    l("6 12 18 ");
+    let preamps: Vec<String> = model.caps.preamp.iter().filter(|p| p.0 > 0).map(|p| format!("{}", p.0 as u32 * 10)).collect();
+    let atts: Vec<String> = model.caps.att.iter().filter(|a| a.0 > 0).map(|a| label_db(a.1).to_string()).collect();
+    l(&format!("{} ", preamps.join(" ")));
+    l(&format!("{} ", atts.join(" ")));
     let funcs: u64 = FUNCS.iter().fold(0, |a, f| a | (1u64 << f.1));
     let get_levels: u64 = LEVELS.iter().fold(0, |a, f| a | (1u64 << f.1));
     let set_levels: u64 = LEVELS.iter().filter(|f| f.2).fold(0, |a, f| a | (1u64 << f.1));

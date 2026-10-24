@@ -27,6 +27,16 @@ impl Default for ConsoleState {
 
 pub fn show(app: &mut App, ui: &mut Ui) {
     let rig = app.rig().clone();
+    let model = rig.model();
+    if !model.is_ftdx3000() {
+        ui.label(
+            RichText::new(format!(
+                "Commands here are RigHelm's language — the FTDX3000's CAT commands — whatever the radio. RigHelm translates them for the {} on the cable.",
+                model.full_name()
+            ))
+            .weak(),
+        );
+    }
     let st = &mut app.console;
     ui.horizontal(|ui| {
         ui.label("Command");
