@@ -44,6 +44,7 @@ pub static ALL: &[&RadioModel] = &[
     &ts990::TS990S,
     &ts2000::TS2000,
     &ts480::TS480,
+    &ts480::TS480HX,
     &k3::K3,
     &k3::KX3,
     &k3::KX2,
