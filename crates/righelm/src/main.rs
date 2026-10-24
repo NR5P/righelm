@@ -13,9 +13,11 @@ mod sharing;
 mod waterfall;
 mod widgets;
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, RichText};
+use parking_lot::Mutex;
 use ftdx3000_rig::detect::{self, DetectedRadio};
 use ftdx3000_rig::{Config, LinkState, Rig, Services};
 
@@ -64,6 +66,10 @@ pub struct App {
     screenshots: Option<(std::path::PathBuf, Instant, usize)>,
     /// The space bar is holding the transmitter keyed (push-to-talk).
     space_keyed: bool,
+    /// The keyboard as the main window last saw it, and when a window last
+    /// saw the space bar held (push-to-talk lets go if that goes stale).
+    root_keys: Option<Keys>,
+    space_seen: Instant,
     /// Scripted demo being recorded (`RIGHELM_DEMO`).
     demo: Option<demo::Demo>,
 }
@@ -121,11 +127,14 @@ impl App {
             scope: Default::default(),
             screenshots: std::env::var_os("FTDX3000_SCREENSHOTS").map(|d| (d.into(), Instant::now(), 0)),
             space_keyed: false,
+            root_keys: None,
+            space_seen: Instant::now(),
             demo: demo::Demo::from_env(),
         }
     }
 
     fn screenshot_step(&mut self, ctx: &egui::Context) {
+        let detached = scope::detached(self);
         let Some((dir, at, idx)) = &mut self.screenshots else { return };
         // Layout check: shoot the Operate page with the computer key open.
         if *idx == 0 && std::env::var_os("RIGHELM_CW_TEST").is_some() && self.services.cw().is_none() && at.elapsed() > Duration::from_secs(1) {
@@ -144,15 +153,20 @@ impl App {
             ctx.request_repaint();
             return;
         }
-        if *idx >= 1 && *idx <= SCREENSHOT_TABS.len() {
-            let path = dir.join(format!("{}.ppm", SCREENSHOT_TABS[*idx - 1].1));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::ScreenshotCallback::new(move |img| {
+        let shoot = |path: std::path::PathBuf| {
+            egui::ViewportCommand::Screenshot(egui::ScreenshotCallback::new(move |img| {
                 let mut out = format!("P6\n{} {}\n255\n", img.size[0], img.size[1]).into_bytes();
                 for p in &img.pixels {
                     out.extend_from_slice(&[p.r(), p.g(), p.b()]);
                 }
                 let _ = std::fs::write(&path, out);
-            })));
+            }))
+        };
+        if *idx >= 1 && *idx <= SCREENSHOT_TABS.len() {
+            ctx.send_viewport_cmd(shoot(dir.join(format!("{}.ppm", SCREENSHOT_TABS[*idx - 1].1))));
+        }
+        if *idx == 1 && detached {
+            ctx.send_viewport_cmd_to(scope::window_id(), shoot(dir.join("scope_window.ppm")));
         }
         if *idx > SCREENSHOT_TABS.len() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -165,19 +179,47 @@ impl App {
 
     /// Push-to-talk: hold the space bar to transmit, let go to stop. Not while
     /// typing in a text field or with the CW key armed, and it lets go when
-    /// the window loses focus (the key-up would never arrive).
-    fn space_ptt(&mut self, ctx: &egui::Context) {
+    /// the window loses focus (the key-up would never arrive). Called by each
+    /// window (this one and the band scope's own) with its own context; the
+    /// window that has the keyboard decides.
+    pub fn space_ptt(&mut self, ctx: &egui::Context) {
         let enabled = self.services.config.ui.space_ptt && self.services.cw().is_none() && self.rig().link().is_open();
-        let typing = ctx.egui_wants_keyboard_input();
-        let (held, focused) = ctx.input(|i| (i.key_down(egui::Key::Space), i.focused));
+        let (space_held, focused) = ctx.input(|i| (i.key_down(egui::Key::Space), i.focused));
+        let keys = Keys { space_held, focused, typing: ctx.egui_wants_keyboard_input(), at: Instant::now() };
+        if ctx.viewport_id() == egui::ViewportId::ROOT {
+            self.root_keys = Some(keys);
+        } else {
+            self.scope.window_keys = Some(keys);
+        }
+        // A window that hasn't drawn lately (hidden, or closed) doesn't count.
+        let k = [self.scope.window_keys, self.root_keys].into_iter().flatten().find(|k| k.focused && k.at.elapsed() < PTT_STALE);
+        let (held, focused, typing) = k.map_or((false, false, false), |k| (k.space_held, true, k.typing));
+        if held && focused {
+            self.space_seen = Instant::now();
+        }
         let transmitting = self.rig().state().transmitting();
         if let Some(key) = ptt_step(enabled, typing, held, focused, self.space_keyed, transmitting) {
             self.rig().send(if key { "TX1;" } else { "TX0;" });
             self.space_keyed = key;
         }
         // The space bar must not also press whatever button has focus.
-        if enabled && !typing {
+        if enabled && !keys.typing {
             ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space));
+        }
+        if self.space_keyed {
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
+    }
+
+    /// Runs before every frame, and also while every window is hidden (when
+    /// no frame is drawn at all).
+    fn logic(&mut self, ctx: &egui::Context) {
+        self.services.tick();
+        // Push-to-talk held but no window has seen the space bar lately (they
+        // stopped drawing — covered or minimized): let go of the transmitter.
+        if self.space_keyed && self.space_seen.elapsed() > PTT_STALE {
+            self.rig().send("TX0;");
+            self.space_keyed = false;
         }
         if self.space_keyed {
             ctx.request_repaint_after(Duration::from_millis(50));
@@ -273,9 +315,8 @@ impl App {
     }
 }
 
-impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.services.tick();
+impl App {
+    fn ui(&mut self, ui: &mut egui::Ui, shared: &Shared) {
         let ctx = ui.ctx().clone();
         self.space_ptt(&ctx);
         if self.last_detect.elapsed() > Duration::from_secs(3) {
@@ -296,8 +337,10 @@ impl eframe::App for App {
             Tab::Console => console::show(self, ui),
             Tab::Settings => settings_tab::show(self, ui),
         });
+        // The band scope's own window, if it's popped out.
+        scope::window(self, &ctx, shared);
         // Only watch the dongle while the scope is on screen.
-        if self.tab != Tab::Operate {
+        if self.tab != Tab::Operate && !scope::detached(self) {
             self.scope.pause();
         }
         if let Some(d) = &mut self.demo {
@@ -309,7 +352,7 @@ impl eframe::App for App {
         ui.ctx().request_repaint_after(Duration::from_millis(250));
     }
 
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, raw_input: &mut egui::RawInput) {
         if let Some(d) = &mut self.demo {
             d.input(raw_input);
         }
@@ -322,6 +365,44 @@ impl eframe::App for App {
         self.services.shutdown();
     }
 }
+
+/// The app behind a lock. The band scope's own window is drawn by eframe on
+/// its own schedule (so it keeps going while the main window is covered or
+/// minimized), and reaches the app through this.
+pub type Shared = Arc<Mutex<App>>;
+
+struct Root(Shared);
+
+impl eframe::App for Root {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.0.lock().logic(ctx);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let shared = self.0.clone();
+        self.0.lock().ui(ui, &shared);
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.0.lock().raw_input_hook(raw_input);
+    }
+
+    fn on_exit(&mut self) {
+        self.0.lock().on_exit();
+    }
+}
+
+/// One window's keyboard, for push-to-talk.
+#[derive(Debug, Clone, Copy)]
+pub struct Keys {
+    pub space_held: bool,
+    pub focused: bool,
+    pub typing: bool,
+    pub at: Instant,
+}
+
+/// How long a window's view of the keyboard counts for push-to-talk.
+const PTT_STALE: Duration = Duration::from_millis(500);
 
 /// Push-to-talk decision: `Some(true)` = key, `Some(false)` = un-key.
 /// Starts only from a focused window with no text field being typed in, and
@@ -369,7 +450,7 @@ fn main() -> eframe::Result {
     if demo {
         options.wgpu_options.surface.present_mode = eframe::egui_wgpu::wgpu::PresentMode::AutoNoVsync;
     }
-    eframe::run_native("RigHelm", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+    eframe::run_native("RigHelm", options, Box::new(|cc| Ok(Box::new(Root(Arc::new(Mutex::new(App::new(cc))))))))
 }
 
 #[cfg(test)]

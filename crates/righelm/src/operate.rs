@@ -171,8 +171,12 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         egui::Panel::top("op_radio")
             .frame(egui::Frame::NONE.inner_margin(egui::Margin { bottom: 6, ..Default::default() }))
             .show(ui, |ui| radio_strip(app, ui, &rig, &s, live));
-        let middle = crate::scope::visible(app) || app.services.config.ui.show_waterfall || app.services.cw().is_some();
+        let detached = crate::scope::detached(app);
+        let middle = (crate::scope::visible(app) && !detached) || app.services.config.ui.show_waterfall || app.services.cw().is_some();
         if !middle {
+            if detached {
+                scope_away_note(app, ui);
+            }
             // Nothing to show in the middle: the groups take the whole width.
             let all: Vec<Group> = LEFT.iter().chain(RIGHT.iter()).copied().collect();
             stack(app, ui, &rig, &s, "op_all", &all);
@@ -212,15 +216,29 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     });
 }
 
+/// A line saying where the band scope went, with a way back.
+fn scope_away_note(app: &mut App, ui: &mut Ui) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("BAND SCOPE").strong().color(AMBER));
+        ui.label(RichText::new("is in its own window").weak());
+        if ui.small_button("⤒ Put back").on_hover_text("Put the band scope back here").clicked() {
+            app.services.config.ui.scope_window = false;
+        }
+    });
+}
+
 /// The band scope over the audio waterfall, sharing the height between them
 /// at a line that can be dragged; the computer key's pad under them.
 fn middle_column(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
+    if crate::scope::detached(app) {
+        scope_away_note(app, ui);
+    }
     if app.services.cw().is_some() {
         egui::Panel::bottom("op_cw_pad")
             .frame(egui::Frame::NONE.inner_margin(egui::Margin { top: 4, ..Default::default() }))
             .show(ui, |ui| crate::cw_key::panel(app, ui));
     }
-    let scope = crate::scope::visible(app);
+    let scope = crate::scope::visible(app) && !crate::scope::detached(app);
     let audio = app.services.config.ui.show_waterfall;
     let w = ui.available_width();
     let fill = |ui: &mut Ui, h: f32, f: &mut dyn FnMut(&mut Ui)| {
@@ -311,7 +329,7 @@ fn radio_strip(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState, live: bool
 }
 
 /// Arrow keys tune VFO-A by the step; PageUp/PageDown change band.
-fn keyboard(ui: &mut Ui, rig: &Rig, s: &RadioState, step: i64) {
+pub(crate) fn keyboard(ui: &mut Ui, rig: &Rig, s: &RadioState, step: i64) {
     let (up, down, pgup, pgdn) = ui.input(|i| {
         (
             i.key_pressed(egui::Key::ArrowUp) || i.key_pressed(egui::Key::ArrowRight),
