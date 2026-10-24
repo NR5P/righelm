@@ -466,6 +466,8 @@ struct PollItem {
     key: String,
     next: Instant,
     every: Duration,
+    /// Skipped while transmitting, leaving the link to the TX meters.
+    rx_only: bool,
 }
 
 /// Whether a poll item runs in the current TX/RX state: the S-meter while
@@ -473,7 +475,7 @@ struct PollItem {
 fn poll_eligible(p: &PollItem, transmitting: bool) -> bool {
     if p.key == "ID" {
         false
-    } else if p.key.starts_with("SM") {
+    } else if p.key.starts_with("SM") || p.rx_only {
         !transmitting
     } else if p.key.starts_with("RM") {
         transmitting
@@ -870,7 +872,7 @@ impl Engine {
         let model = self.shared.state.read().model;
         let has = |cmd: &str| model.has(&cmd[..2]);
         let mut polls = Vec::new();
-        let mut add = |cmd: &str, every: u64, offset: u64| {
+        let mut add = |cmd: &str, every: u64, offset: u64, rx_only: bool| {
             if !has(cmd) {
                 return;
             }
@@ -879,22 +881,25 @@ impl Engine {
                 Request::Read { key } => key,
                 _ => return,
             };
-            polls.push(PollItem { cmd, key, next: now + Duration::from_millis(offset), every: Duration::from_millis(every) });
+            polls.push(PollItem { cmd, key, next: now + Duration::from_millis(offset), every: Duration::from_millis(every), rx_only });
         };
-        add("TX;", 250, 0);
-        add("SM0;", c.meter_poll_ms, 0);
-        for m in ["RM5;", "RM6;", "RM4;", "RM3;", "RM7;", "RM8;"] {
-            add(m, c.meter_poll_ms, 0);
+        add("TX;", 150, 0, false);
+        add("SM0;", c.meter_poll_ms, 0, false);
+        // Power out and ALC move with the voice; the rest hardly move.
+        let fast = (c.meter_poll_ms / 3).max(40);
+        for (m, every) in [("RM5;", fast), ("RM4;", fast), ("RM6;", c.meter_poll_ms), ("RM3;", c.meter_poll_ms), ("RM7;", c.meter_poll_ms * 4), ("RM8;", c.meter_poll_ms * 4)] {
+            add(m, every, 0, false);
         }
         let vfo = if c.auto_info { c.vfo_poll_ms * 3 } else { c.vfo_poll_ms };
         for v in VFO_POLL {
-            add(v, vfo, 0);
+            add(v, vfo, 0, false);
         }
         let misc: Vec<&&str> = MISC_POLL.iter().filter(|m| has(m)).collect();
         let misc_cycle = c.misc_poll_ms * misc.len() as u64;
         let misc_every = if c.auto_info { misc_cycle.max(15_000) } else { misc_cycle.max(5_000) };
         for (i, m) in misc.iter().enumerate() {
-            add(m, misc_every, 200 + i as u64 * c.misc_poll_ms);
+            // MOX is part of the TX state, so it keeps being read.
+            add(m, misc_every, 200 + i as u64 * c.misc_poll_ms, **m != "MX;");
         }
         self.polls = polls;
 
@@ -1086,7 +1091,7 @@ impl Engine {
                         self.write_read("ID".into(), "ID;".into(), Source::Poll, true);
                     }
                 } else {
-                    self.polls.push(PollItem { cmd: "ID;".into(), key: "ID".into(), next: now, every: Duration::from_secs(2) });
+                    self.polls.push(PollItem { cmd: "ID;".into(), key: "ID".into(), next: now, every: Duration::from_secs(2), rx_only: false });
                 }
                 return;
             }
@@ -1097,12 +1102,24 @@ impl Engine {
                 }
                 continue;
             }
+            if self.shared.state.read().transmitting() {
+                // Skip, rather than save up, what falls due while
+                // transmitting, so receive doesn't start with a backlog.
+                for p in self.polls.iter_mut().filter(|p| p.rx_only && p.next <= now) {
+                    p.next = now + p.every;
+                }
+            }
             if let Some(idx) = self.next_poll(now) {
                 let p = &mut self.polls[idx];
                 p.next = now + p.every;
                 let (key, cmd) = (p.key.clone(), p.cmd.clone());
-                // Skip if something else refreshed it recently.
-                if self.shared.cached(&key, self.polls[idx].every / 2).is_some() && !key.starts_with("SM") && !key.starts_with("RM") {
+                // Skip if something else refreshed it recently. A local
+                // radio's meters only refresh by polling; a remote server
+                // pushes them.
+                let meter = key.starts_with("SM") || key.starts_with("RM");
+                let pushed = meter && self.config.remote.is_some();
+                let every = self.polls[idx].every;
+                if (!meter || pushed) && self.shared.cached(&key, if pushed { every } else { every / 2 }).is_some() {
                     continue;
                 }
                 self.write_read(key, cmd, Source::Poll, false);
@@ -1259,7 +1276,15 @@ impl Engine {
             // Everything written before this read was accepted.
             self.unconfirmed.clear();
         }
-        self.shared.log(Dir::Rx, if solicited { src } else { None }, &frame);
+        // Meters a remote server pushes are as routine as polled ones.
+        let log_src = if solicited {
+            src
+        } else if key.starts_with("SM") || key.starts_with("RM") {
+            Some(Source::Poll)
+        } else {
+            None
+        };
+        self.shared.log(Dir::Rx, log_src, &frame);
         self.fails = 0;
         if matches!(*self.shared.link.read(), LinkState::NoResponse { .. }) {
             self.shared.info("radio is answering again");
@@ -1384,6 +1409,30 @@ mod tests {
             assert!(t0.elapsed() < Duration::from_secs(3), "no AI update");
         }
         assert_eq!(rig.state().freq_a, 21_074_000);
+        rig.shutdown();
+    }
+
+    #[test]
+    fn power_out_is_read_more_often_than_swr_while_transmitting() {
+        let (rig, _sim) = rig_with_sim();
+        let _ = rig.read("FA;", Freshness::Radio, Source::Gui, Duration::from_secs(2)).unwrap();
+        rig.send("TX1;");
+        let t0 = Instant::now();
+        while !rig.state().transmitting() && t0.elapsed() < Duration::from_secs(2) {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let updates = rig.subscribe();
+        let (mut po, mut swr) = (0, 0);
+        let t0 = Instant::now();
+        while t0.elapsed() < Duration::from_millis(1500) {
+            if let Ok(u) = updates.recv_timeout(Duration::from_millis(50)) {
+                po += u.frame.starts_with("RM5") as u32;
+                swr += u.frame.starts_with("RM6") as u32;
+            }
+        }
+        rig.send("TX0;");
+        assert!(po >= 20, "PO read {po} times in 1.5 s");
+        assert!(po >= swr * 2, "PO {po} vs SWR {swr}");
         rig.shutdown();
     }
 }

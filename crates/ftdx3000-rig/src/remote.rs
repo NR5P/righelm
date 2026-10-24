@@ -733,7 +733,9 @@ fn serve_cat(rig: &Rig, cfg: &RemoteServerConfig, stream: TcpStream, mut reader:
     let client = Arc::new(vport::ClientCtx::default());
     let connected = Arc::new(AtomicBool::new(true));
     let session_stop = Arc::new(AtomicBool::new(false));
-    let _pusher = vport::ai_pusher(rig.clone(), writer.clone(), client.clone(), connected.clone(), session_stop.clone(), || {})?;
+    // The client is a RigHelm engine: push it the meters so they don't
+    // wait on its polls.
+    let _pusher = vport::ai_pusher(rig.clone(), writer.clone(), client.clone(), connected.clone(), session_stop.clone(), true, || {})?;
     let vcfg = VirtualPortConfig { name: who.into(), label: who.into(), enabled: true, block_tx: !tx_allowed(cfg), com_port: String::new(), emulate: "ftdx3000".into() };
     let source = Source::Client(who.into());
     let mut framer = Framer::new();
@@ -1518,6 +1520,29 @@ mod tests {
         }
         assert_eq!(client.state().mode_a, Some(ftdx3000_cat::Mode::Cw));
         client.shutdown();
+        server_rig.shutdown();
+    }
+
+    #[test]
+    fn meters_are_pushed_to_remote_clients() {
+        let server_rig = sim_rig();
+        let cfg = RemoteServerConfig { bind: "127.0.0.1:0".into(), password: "secret".into(), audio: false, ..Default::default() };
+        let server = RemoteServer::start(server_rig.clone(), cfg, ScopeTap::default()).unwrap();
+        let (mut link, _) = connect_cat(&RemoteTarget { addr: server.addr.to_string(), password: "secret".into() }).unwrap();
+        link.writer.write_all(b"AI1;").unwrap();
+        server_rig.send("TX1;");
+        // Without asking for them, power-out readings arrive.
+        let mut framer = ftdx3000_cat::Framer::new();
+        let mut buf = [0u8; 512];
+        let t0 = Instant::now();
+        let mut po = 0;
+        while po < 3 && t0.elapsed() < Duration::from_secs(5) {
+            if let Ok(n) = link.reader.read(&mut buf) {
+                po += framer.push(&buf[..n]).iter().filter(|f| f.starts_with("RM5")).count();
+            }
+        }
+        server_rig.send("TX0;");
+        assert!(po >= 3, "only {po} PO readings pushed");
         server_rig.shutdown();
     }
 

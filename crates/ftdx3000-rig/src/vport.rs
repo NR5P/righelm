@@ -112,7 +112,7 @@ impl VirtualPort {
         let connected = Arc::new(AtomicBool::new(false));
 
         let emulator: SharedEmulator = Arc::new(Mutex::new(None));
-        let pusher = ai_pusher_as(rig.clone(), writer.clone(), client.clone(), connected.clone(), stop.clone(), emulator.clone(), {
+        let pusher = ai_pusher_as(rig.clone(), writer.clone(), client.clone(), connected.clone(), stop.clone(), emulator.clone(), false, {
             let status = status.clone();
             move || status.lock().frames_out += 1
         })?;
@@ -182,16 +182,19 @@ impl ClientCtx {
 /// Where answers and auto-information for one client are written.
 pub(crate) type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
-/// Push changed auto-information frames to a client that turned AI on.
+/// Push changed auto-information frames to a client that turned AI on, and
+/// with `meters` the meter readings too (for a client that is our own
+/// engine: a real radio never sends those unasked).
 pub(crate) fn ai_pusher(
     rig: Rig,
     writer: SharedWriter,
     client: Arc<ClientCtx>,
     connected: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
+    meters: bool,
     on_sent: impl Fn() + Send + 'static,
 ) -> std::io::Result<thread::JoinHandle<()>> {
-    ai_pusher_as(rig, writer, client, connected, stop, Arc::new(Mutex::new(None)), on_sent)
+    ai_pusher_as(rig, writer, client, connected, stop, Arc::new(Mutex::new(None)), meters, on_sent)
 }
 
 /// [`ai_pusher`] for a client that sees another radio: frames go through
@@ -203,6 +206,7 @@ pub(crate) fn ai_pusher_as(
     connected: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     emulator: SharedEmulator,
+    meters: bool,
     on_sent: impl Fn() + Send + 'static,
 ) -> std::io::Result<thread::JoinHandle<()>> {
     let updates = rig.subscribe();
@@ -212,12 +216,14 @@ pub(crate) fn ai_pusher_as(
             if !(u.changed && !u.first && client.ai.load(Ordering::Relaxed) && connected.load(Ordering::Relaxed)) {
                 continue;
             }
-            // Meters change on every poll; pushing them would flood the client.
-            let is_ai = frame::split(&u.frame)
-                .filter(|(c, _)| !matches!(c.as_str(), "SM" | "RM" | "BY"))
-                .and_then(|(c, _)| command::lookup(&c))
-                .is_some_and(|c| c.ai);
-            if !is_ai {
+            // Meters change on every poll; pushing them would flood a program
+            // that only expects auto-information.
+            let push = frame::split(&u.frame).is_some_and(|(c, _)| match c.as_str() {
+                "SM" | "RM" => meters,
+                "BY" => false,
+                c => command::lookup(c).is_some_and(|c| c.ai),
+            });
+            if !push {
                 continue;
             }
             let bytes = match emulator.lock().as_mut() {

@@ -14,6 +14,8 @@ pub struct OperateState {
     /// Frequency being typed: (vfo_b, text).
     freq_edit: Option<(bool, String)>,
     peaks: std::collections::HashMap<Meter, (f32, Instant)>,
+    /// Where each bar is drawn, chasing the reading: (fraction, drawn at).
+    needles: std::collections::HashMap<Meter, (f32, Instant)>,
     keyer_text: [String; 5],
     keyer_loaded: [bool; 5],
 }
@@ -23,6 +25,7 @@ impl Default for OperateState {
         Self {
             freq_edit: None,
             peaks: Default::default(),
+            needles: Default::default(),
             keyer_text: Default::default(),
             keyer_loaded: [false; 5],
         }
@@ -526,6 +529,18 @@ fn meters_block(app: &mut App, ui: &mut Ui, s: &RadioState, w: f32) {
         }
         e.0
     };
+    // Bars rise quickly and fall back slowly, like the radio's own meter,
+    // instead of jumping from one reading to the next.
+    let mut moving = false;
+    let mut needle = |m: Meter, f: f32| -> f32 {
+        let e = app.operate.needles.entry(m).or_insert((f, now));
+        let dt = now.duration_since(e.1).as_secs_f32();
+        let tau = if f > e.0 { 0.03 } else { 0.3 };
+        e.0 += (f - e.0) * (1.0 - (-dt / tau).exp());
+        e.1 = now;
+        moving |= (f - e.0).abs() > 0.002;
+        e.0
+    };
     const CAL: &str = "Meter calibration is approximate";
     {
         let raw = if tx { 0 } else { s.s_meter };
@@ -533,7 +548,7 @@ fn meters_block(app: &mut App, ui: &mut Ui, s: &RadioState, w: f32) {
         let pk = peak(Meter::S, f);
         widgets::Meter {
             label: "S",
-            fraction: f,
+            fraction: needle(Meter::S, f),
             text: if tx { "—".into() } else { types::s_meter_text(raw) },
             color: GREEN,
             ticks: &[(0.0, "0"), (40.0 / 255.0, "3"), (80.0 / 255.0, "6"), (130.0 / 255.0, "9"), (172.0 / 255.0, "+20"), (220.0 / 255.0, "+40"), (1.0, "+60")],
@@ -554,7 +569,7 @@ fn meters_block(app: &mut App, ui: &mut Ui, s: &RadioState, w: f32) {
     const TICKS_10: &[(f32, &str)] = &[(0.0, "0"), (0.25, "2.5"), (0.5, "5"), (0.75, "7.5"), (1.0, "10")];
     widgets::Meter {
         label: "PO",
-        fraction: pf,
+        fraction: needle(Meter::Po, pf),
         text: if !tx { "—".into() } else if low_power { format!("{po_w:.1} W") } else { format!("{po_w:.0} W") },
         color: AMBER,
         ticks: if low_power && s.model.caps.power.1 == 10 { TICKS_10 } else if low_power { &[] } else { TICKS_100 },
@@ -577,10 +592,10 @@ fn meters_block(app: &mut App, ui: &mut Ui, s: &RadioState, w: f32) {
     .on_hover_text(CAL);
     let txt = |t: String| if tx { t } else { "—".into() };
     let alc = if tx { get(Meter::Alc) as f32 / 255.0 } else { 0.0 };
-    widgets::Meter { label: "ALC", fraction: alc, text: txt(format!("{:.0}%", alc * 100.0)), color: CYAN, ticks: &[], red_from: Some(0.5), peak: None }
+    widgets::Meter { label: "ALC", fraction: needle(Meter::Alc, alc), text: txt(format!("{:.0}%", alc * 100.0)), color: CYAN, ticks: &[], red_from: Some(0.5), peak: None }
         .show_sized(ui, w, 20.0);
     let comp = if tx { get(Meter::Comp) as f32 / 255.0 } else { 0.0 };
-    widgets::Meter { label: "COMP", fraction: comp, text: txt(format!("{:.0} dB", comp * 30.0)), color: CYAN, ticks: &[], red_from: None, peak: None }
+    widgets::Meter { label: "COMP", fraction: needle(Meter::Comp, comp), text: txt(format!("{:.0} dB", comp * 30.0)), color: CYAN, ticks: &[], red_from: None, peak: None }
         .show_sized(ui, w, 20.0);
     let id = if tx { interpolate(&types::ID_CAL, get(Meter::Id)) } else { 0.0 };
     widgets::Meter { label: "ID", fraction: id / 25.0, text: txt(format!("{id:.1} A")), color: CYAN, ticks: &[], red_from: None, peak: None }
@@ -589,6 +604,9 @@ fn meters_block(app: &mut App, ui: &mut Ui, s: &RadioState, w: f32) {
     let vdd = interpolate(&types::VDD_CAL, get(Meter::Vdd));
     let vdd = if s.meter(Meter::Vdd).is_some() { format!("{vdd:.1} V") } else { "—".into() };
     ui.label(RichText::new(format!("VDD {vdd}")).weak().size(11.0)).on_hover_text(CAL);
+    if moving {
+        ui.ctx().request_repaint_after(Duration::from_millis(16));
+    }
 }
 
 /// Transmit: MOX, the tuner, which mic and which key, antenna and the
