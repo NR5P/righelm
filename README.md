@@ -422,6 +422,15 @@ CW keyer tests, and for every supported radio:
 
 `RIGHELM_MODELS=ic7300,ft991a cargo test` checks just those radios.
 
+A check against the real radio that never transmits: it detects the radio, runs RigHelm's
+start-up, reads the whole menu and everything the screens use, writes back values the radio
+already has, and reads it through the rigctld server. Every transmit command is dropped
+before it reaches the radio. Close RigHelm first, because it needs the CAT port:
+
+```bash
+cargo run --release --example radio_check
+```
+
 With the radio connected to a dummy load, two hardware checks key it briefly at 5 W. Close
 RigHelm first, because they need the CAT port:
 
