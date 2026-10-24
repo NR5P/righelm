@@ -486,7 +486,7 @@ mod tests {
         let mut clicks = 0;
         let mut frame = |raw: egui::RawInput, consume: bool, clicks: &mut i32| -> bool {
             let mut held = false;
-            let _ = ctx.run_ui(raw, |ui| {
+            let mut out = ctx.run_ui(raw, |ui| {
                 if consume {
                     ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space));
                 }
@@ -495,6 +495,8 @@ mod tests {
                 r.request_focus();
                 *clicks += r.clicked() as i32;
             });
+            // No painter here to take the font atlas.
+            out.textures_delta.clear();
             held
         };
         frame(egui::RawInput::default(), true, &mut clicks); // focus the button
