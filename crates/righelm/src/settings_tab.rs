@@ -274,6 +274,7 @@ fn display(app: &mut App, ui: &mut Ui) {
             ui.add(egui::Slider::new(&mut prefs.wf_height, 80..=600).suffix(" px"));
         });
         ui.checkbox(&mut prefs.show_scope, "Show the band scope on the Operate page (when an RTL-SDR dongle is found)");
+        ui.checkbox(&mut prefs.scope_window, "Band scope in a window of its own (to make it big, or put it on another monitor)");
         ui.checkbox(&mut prefs.scope_band_plan, "Band scope: show the US band plan (CW/data and phone) and FT8/FT4 calling frequencies");
         ui.label(
             RichText::new(

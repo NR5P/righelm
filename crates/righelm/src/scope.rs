@@ -141,6 +141,13 @@ pub struct BandScope {
     zero_beat: Option<(u64, Instant)>,
     /// What the last click did, shown for a moment.
     tuned: Option<(String, Instant)>,
+    /// The scope's own window: where it opened (kept while it's open, so
+    /// moving it isn't fought), frames since and the size it settled at
+    /// (some desktops give a little less than asked; only the user's
+    /// resizing is kept), and its keyboard for push-to-talk.
+    window_opened: Option<(Option<[i32; 2]>, [u32; 2])>,
+    window_settled: (u32, Option<egui::Vec2>),
+    pub window_keys: Option<crate::Keys>,
 }
 
 impl BandScope {
@@ -405,12 +412,99 @@ pub fn visible(app: &crate::App) -> bool {
     app.services.config.ui.show_scope && (status.present || status.running)
 }
 
-/// The band scope, filling the height it's given.
+/// The band scope is showing in its own window.
+pub fn detached(app: &crate::App) -> bool {
+    app.services.config.ui.scope_window && visible(app)
+}
+
+/// The band scope's own window.
+pub fn window_id() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("righelm_band_scope")
+}
+
+/// The band scope's own window, while it's popped out. Closing the window
+/// puts the scope back on the Operate page. eframe draws it on its own
+/// schedule, so it keeps going while the main window is covered or minimized.
+pub fn window(app: &mut crate::App, ctx: &egui::Context, shared: &crate::Shared) {
+    if !detached(app) {
+        app.scope.window_opened = None;
+        app.scope.window_settled = (0, None);
+        app.scope.window_keys = None;
+        return;
+    }
+    let prefs = &app.services.config.ui;
+    // Placed where it was last time (where the desktop lets programs place
+    // windows), then left alone while it's open.
+    let (pos, size) = *app.scope.window_opened.get_or_insert((prefs.scope_window_pos, prefs.scope_window_size));
+    let mut builder = egui::ViewportBuilder::default()
+        .with_title("RigHelm — Band scope")
+        .with_app_id("righelm")
+        .with_icon(eframe::icon_data::from_png_bytes(crate::ICON_PNG).expect("embedded icon"))
+        .with_inner_size([size[0].max(480) as f32, size[1].max(300) as f32])
+        .with_min_inner_size([480.0, 300.0]);
+    if let Some([x, y]) = pos {
+        builder = builder.with_position([x as f32, y as f32]);
+    }
+    if ctx.embed_viewports() {
+        // No separate windows here: it's drawn inside this one, right now.
+        ctx.show_viewport_immediate(window_id(), builder, |ui, _| window_contents(app, ui));
+        return;
+    }
+    let shared = shared.clone();
+    ctx.show_viewport_deferred(window_id(), builder, move |ui, _| {
+        // Never wait on the main window (it is never mid-frame when this
+        // runs, but if it were, skipping a frame beats a hang).
+        match shared.try_lock() {
+            Some(mut app) => window_contents(&mut app, ui),
+            None => ui.ctx().request_repaint(),
+        }
+    });
+}
+
+fn window_contents(app: &mut crate::App, ui: &mut Ui) {
+    let rig = app.rig().clone();
+    let s = rig.state().clone();
+    app.space_ptt(ui.ctx());
+    egui::CentralPanel::default().show(ui, |ui| {
+        let live = rig.link().is_open() && s.power_on != Some(false);
+        if live && !ui.ctx().egui_wants_keyboard_input() {
+            crate::operate::keyboard(ui, &rig, &s, app.services.config.ui.tune_step);
+        }
+        show(app, ui, &rig, &s);
+    });
+    let (close, outer, size) = ui.input(|i| (i.viewport().close_requested(), i.viewport().outer_rect, i.content_rect().size()));
+    let prefs = &mut app.services.config.ui;
+    // The size it opened at plus the user's resizing since it settled; the
+    // position only where the desktop tells it (Wayland doesn't).
+    let opened = app.scope.window_opened.map_or(prefs.scope_window_size, |o| o.1);
+    let settled = &mut app.scope.window_settled;
+    settled.0 += 1;
+    if settled.0 == 5 {
+        settled.1 = Some(size);
+    }
+    if let Some(base) = settled.1 {
+        let grown = size - base;
+        prefs.scope_window_size = [(opened[0] as f32 + grown.x).max(480.0).round() as u32, (opened[1] as f32 + grown.y).max(300.0).round() as u32];
+    }
+    if let Some(r) = outer {
+        prefs.scope_window_pos = Some([r.min.x.round() as i32, r.min.y.round() as i32]);
+    }
+    if close {
+        prefs.scope_window = false;
+    }
+}
+
+/// The band scope, filling the height it's given (on the Operate page, or
+/// in its own window).
 pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
     let status: ScopeStatus = app.services.scope_status();
     if !app.services.config.ui.show_scope || !(status.present || status.running) {
         app.scope.pause();
         return;
+    }
+    let own_window = ui.ctx().viewport_id() != egui::ViewportId::ROOT;
+    if app.services.config.ui.scope_window && !own_window {
+        return; // it's in its own window
     }
     // CW: fine zero-beat from the audio once the radio has settled.
     let audio_lines = app.waterfall.lines();
@@ -479,6 +573,14 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
             // Rows as tall as the buttons, so a label starting one lines up.
             ui.set_row_height(22.0);
             ui.label(RichText::new("BAND SCOPE").strong().size(15.0).color(AMBER)).on_hover_text(&status.text);
+            let (text, hover) = if own_window {
+                ("⤓ Put back", "Put the band scope back on the Operate page (or just close this window)")
+            } else {
+                ("⧉ Own window", "Open the band scope in a window of its own, to make it bigger or move it to another monitor")
+            };
+            if ui.small_button(text).on_hover_text(hover).clicked() {
+                prefs.scope_window = !own_window;
+            }
             ui.label("Span");
             for (hz, label) in SPANS {
                 let r = ui.selectable_label(prefs.scope_span == hz, label);

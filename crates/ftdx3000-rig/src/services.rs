@@ -81,6 +81,11 @@ pub struct UiPrefs {
     /// scope), as last dragged.
     pub operate_left_w: u32,
     pub operate_right_w: u32,
+    /// The band scope in a window of its own (to make it big, or put it on
+    /// another monitor), and where that window was last.
+    pub scope_window: bool,
+    pub scope_window_size: [u32; 2],
+    pub scope_window_pos: Option<[i32; 2]>,
 }
 
 impl Default for UiPrefs {
@@ -108,6 +113,9 @@ impl Default for UiPrefs {
             scope_band_plan: true,
             operate_left_w: 290,
             operate_right_w: 300,
+            scope_window: false,
+            scope_window_size: [1100, 620],
+            scope_window_pos: None,
         }
     }
 }
