@@ -29,7 +29,8 @@ fn hamlib_drives_every_simulated_model() {
                     m,
                     s.spawn(move || {
                         let port = SimPort::start(m).unwrap();
-                        let hz = 7_074_000;
+                        // 40 m FT8, or the first band of a VHF/UHF radio.
+                        let hz = if m.in_range(7_074_000) { 7_074_000 } else { m.bands[0].lo + 100_000 };
                         let mut cmds = vec![format!("F {hz}"), "f".into()];
                         let modes: Vec<Mode> = [Mode::Usb, Mode::Cw, Mode::DataUsb, Mode::Am].into_iter().filter(|x| m.modes.contains(x)).collect();
                         for x in &modes {

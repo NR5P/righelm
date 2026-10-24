@@ -53,7 +53,7 @@ fn hamlib_through_a_virtual_port_to_every_model() {
         if m.rts_cts {
             c.arg("--set-conf=serial_handshake=None");
         }
-        let hz = 7_074_000u64;
+        let hz = if m.in_range(7_074_000) { 7_074_000u64 } else { m.bands[0].lo + 100_000 };
         c.args(["F", &hz.to_string(), "f", "M", "USB", "0", "m"]);
         let out = c.output().unwrap();
         let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));

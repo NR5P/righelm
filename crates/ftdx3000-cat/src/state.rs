@@ -530,6 +530,11 @@ mod tests {
         let info = ChannelInfo::parse(&IF_FRAME[2..IF_FRAME.len() - 1]).unwrap();
         assert_eq!(info.to_answer("IF"), IF_FRAME);
         assert_eq!(info.to_mw(5), "MW00514074000+012010200000;");
+        // 9 and 10 frequency digits (IC-705 2 m, IC-9700 23 cm).
+        for f in ["IF001145500000+000000410000;", "IF0011296100000-001010400000;"] {
+            let info = ChannelInfo::parse(&f[2..f.len() - 1]).unwrap();
+            assert_eq!(info.to_answer("IF"), f);
+        }
     }
 
     #[test]
