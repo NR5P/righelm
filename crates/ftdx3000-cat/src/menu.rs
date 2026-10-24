@@ -1,4 +1,5 @@
-//! The 196 `EX` menu items (CAT reference Tables 2-4).
+//! Menu items, and the FTDX3000's 196 `EX` menu items (CAT reference
+//! Tables 2-4). Other radios' menus are in [`crate::models`].
 //!
 //! The reference book does not state the digit count of every parameter, so
 //! each item carries a best-guess `width`. The engine always reads a menu item
@@ -25,7 +26,11 @@ pub enum Kind {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MenuItem {
+    /// RigHelm's number for it (`EXnnn`): its place in the model's table.
     pub num: u16,
+    /// The radio's own address for it, where that differs from `num`
+    /// (FTDX101 `EX030201` = 0x030201, Icom `1A 05 00 71` = 0x0071).
+    pub addr: u32,
     pub group: &'static str,
     pub name: &'static str,
     /// Expected number of parameter characters (including any sign).
@@ -41,14 +46,14 @@ pub enum Value {
 }
 
 const fn m(num: u16, group: &'static str, name: &'static str, width: u8, kind: Kind) -> MenuItem {
-    MenuItem { num, group, name, width, kind }
+    MenuItem { num, addr: num as u32, group, name, width, kind }
 }
 
-const fn num(min: i32, max: i32, step: i32, unit: &'static str) -> Kind {
+pub const fn num(min: i32, max: i32, step: i32, unit: &'static str) -> Kind {
     Kind::Num { min, max, step, unit, signed: false, div: 1 }
 }
 
-const fn signed(min: i32, max: i32, step: i32, unit: &'static str) -> Kind {
+pub const fn signed(min: i32, max: i32, step: i32, unit: &'static str) -> Kind {
     Kind::Num { min, max, step, unit, signed: true, div: 1 }
 }
 

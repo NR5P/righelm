@@ -3,8 +3,8 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, ComboBox, RichText, Slider, Ui};
-use ftdx3000_cat::types::{self, BANDS, Meter, Mode, WidthClass, interpolate};
-use ftdx3000_cat::{RadioState, set_freq_cmd, set_mode_cmd};
+use ftdx3000_cat::types::{self, Meter, Mode, WidthClass, interpolate};
+use ftdx3000_cat::{RadioState, set_freq_cmd_for, set_mode_cmd};
 use ftdx3000_rig::Rig;
 
 use crate::App;
@@ -130,7 +130,9 @@ fn stack(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState, id: &str, groups
         .copied()
         .filter(|g| match g {
             Group::Macros => prefs.show_macros,
-            Group::Rotator => prefs.show_rotator,
+            Group::Rotator => prefs.show_rotator && s.model.has("RO"),
+            Group::Clarifier => s.model.has("RT") || s.model.has("XT"),
+            Group::Cw => s.model.has("KS") || s.model.has("KR"),
             _ => true,
         })
         .collect();
@@ -339,8 +341,8 @@ pub(crate) fn keyboard(ui: &mut Ui, rig: &Rig, s: &RadioState, step: i64) {
         )
     });
     let tune = |d: i64| {
-        let hz = (s.freq_a as i64 + d).clamp(types::FREQ_MIN as i64, types::FREQ_MAX as i64) as u64;
-        rig.send(set_freq_cmd(false, hz));
+        let hz = (s.freq_a as i64 + d).max(0) as u64;
+        rig.send(set_freq_cmd_for(s.model, false, hz));
     };
     if up {
         tune(step);
@@ -348,10 +350,10 @@ pub(crate) fn keyboard(ui: &mut Ui, rig: &Rig, s: &RadioState, step: i64) {
     if down {
         tune(-step);
     }
-    if pgup {
+    if pgup && s.model.has("BU") {
         rig.send("BU0;");
     }
-    if pgdn {
+    if pgdn && s.model.has("BD") {
         rig.send("BD0;");
     }
 }
@@ -376,7 +378,7 @@ fn vfo_line(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState, b: bool, live
         if let Some(m) = mode {
             ui.label(RichText::new(m.label()).strong().size(15.0));
         }
-        if let Some(band) = types::band_of(freq) {
+        if let Some(band) = s.model.band_of(freq) {
             ui.label(RichText::new(format!("{} m", band.label)).weak());
         }
         if !b {
@@ -427,8 +429,8 @@ fn freq_or_edit(ui: &mut Ui, rig: &Rig, op: &mut OperateState, s: &RadioState, b
             match done {
                 Some(true) => {
                     if let Some(hz) = widgets::parse_freq(text) {
-                        if (types::FREQ_MIN..=types::FREQ_MAX).contains(&hz) {
-                            rig.send(set_freq_cmd(b, hz));
+                        if s.model.in_range(hz) {
+                            rig.send(set_freq_cmd_for(s.model, b, hz));
                         }
                     }
                     op.freq_edit = None;
@@ -441,8 +443,8 @@ fn freq_or_edit(ui: &mut Ui, rig: &Rig, op: &mut OperateState, s: &RadioState, b
     }
     match widgets::freq_display(ui, freq, size, if b { CYAN } else { AMBER }, step, live && !(s.lock & if b { 2 } else { 1 } != 0)) {
         FreqAction::Step(d) => {
-            let hz = (freq as i64 + d).clamp(types::FREQ_MIN as i64, types::FREQ_MAX as i64) as u64;
-            rig.send(set_freq_cmd(b, hz));
+            let hz = (freq as i64 + d).max(0) as u64;
+            rig.send(set_freq_cmd_for(s.model, b, hz));
         }
         FreqAction::Edit => op.freq_edit = Some((b, String::new())),
         FreqAction::None => {}
@@ -451,44 +453,51 @@ fn freq_or_edit(ui: &mut Ui, rig: &Rig, op: &mut OperateState, s: &RadioState, b
 
 fn vfo_block(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState, live: bool) {
     ui.spacing_mut().item_spacing.y = 4.0;
+    let m = s.model;
     vfo_line(app, ui, rig, s, false, live);
-    vfo_line(app, ui, rig, s, true, live);
+    if m.has("FB") {
+        vfo_line(app, ui, rig, s, true, live);
+    }
     ui.horizontal(|ui| {
-        if button(ui, "A ▸ B") {
+        if m.has("AB") && button(ui, "A ▸ B") {
             rig.send("AB;");
         }
-        if button(ui, "B ▸ A") {
+        if m.has("BA") && button(ui, "B ▸ A") {
             rig.send("BA;");
         }
-        if button(ui, "A ⇄ B") {
+        if m.has("SV") && button(ui, "A ⇄ B") {
             rig.send("SV;");
         }
         let split = s.split();
-        if led_button(ui, split, "SPLIT", AMBER) {
+        if m.has("FT") && led_button(ui, split, "SPLIT", AMBER) {
             // Transmit on the other VFO than the receiver (or back on the same one).
             let tx_b = if split { s.rx_on_b() } else { !s.rx_on_b() };
             rig.send(if tx_b { "FT3;" } else { "FT2;" });
         }
-        if button(ui, "Q.SPLIT") {
+        if m.has("QS") && button(ui, "Q.SPLIT") {
             rig.send("QS;");
         }
     });
     ui.horizontal(|ui| {
-        ui.label("RX on");
-        if ui.selectable_label(!s.rx_on_b(), "A").clicked() {
-            rig.send("FR0;");
+        if m.has("FR") {
+            ui.label("RX on");
+            if ui.selectable_label(!s.rx_on_b(), "A").clicked() {
+                rig.send("FR0;");
+            }
+            if ui.selectable_label(s.rx_on_b(), "B").clicked() {
+                rig.send("FR4;");
+            }
+            ui.separator();
         }
-        if ui.selectable_label(s.rx_on_b(), "B").clicked() {
-            rig.send("FR4;");
-        }
-        ui.separator();
-        if led_button(ui, s.lock & 1 == 1, "LOCK", RED) {
+        if m.has("LK") && led_button(ui, s.lock & 1 == 1, "LOCK", RED) {
             rig.send(if s.lock & 1 == 1 { "LK0;" } else { "LK1;" });
         }
-        if led_button(ui, s.fast & 1 == 1, "FAST", AMBER) {
+        if m.has("FS") && led_button(ui, s.fast & 1 == 1, "FAST", AMBER) {
             rig.send(if s.fast & 1 == 1 { "FS0;" } else { "FS1;" });
         }
-        ui.separator();
+        if m.has("LK") || m.has("FS") {
+            ui.separator();
+        }
         ui.label("Step");
         let step = &mut app.services.config.ui.tune_step;
         ComboBox::from_id_salt("step")
@@ -534,14 +543,19 @@ fn meters_block(app: &mut App, ui: &mut Ui, s: &RadioState, w: f32) {
     }
     let get = |m: Meter| s.meter(m).unwrap_or(0);
     let po_w = interpolate(&types::PO_CAL, get(Meter::Po));
-    let pf = if tx { po_w / 100.0 } else { 0.0 };
+    // The meter's full scale: 100 W, or the radio's own top power.
+    let low_power = s.model.caps.power.1 <= 20;
+    let full = if low_power { s.model.caps.power.1 as f32 } else { 100.0 };
+    let pf = if tx { po_w / full } else { 0.0 };
     let pk = peak(Meter::Po, pf);
+    const TICKS_100: &[(f32, &str)] = &[(0.0, "0"), (0.25, "25"), (0.5, "50"), (0.75, "75"), (1.0, "100")];
+    const TICKS_10: &[(f32, &str)] = &[(0.0, "0"), (0.25, "2.5"), (0.5, "5"), (0.75, "7.5"), (1.0, "10")];
     widgets::Meter {
         label: "PO",
         fraction: pf,
-        text: if tx { format!("{po_w:.0} W") } else { "—".into() },
+        text: if !tx { "—".into() } else if low_power { format!("{po_w:.1} W") } else { format!("{po_w:.0} W") },
         color: AMBER,
-        ticks: &[(0.0, "0"), (0.25, "25"), (0.5, "50"), (0.75, "75"), (1.0, "100")],
+        ticks: if low_power && s.model.caps.power.1 == 10 { TICKS_10 } else if low_power { &[] } else { TICKS_100 },
         red_from: None,
         peak: tx.then_some(pk),
     }
@@ -586,16 +600,18 @@ fn tx_block(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
         if ui.add_sized([170.0, 34.0], mox).on_hover_text("Transmits! Uses CAT TX (TX1;/TX0;). Or hold the space bar to talk (Settings).").clicked() {
             rig.send(if txing { "TX0;" } else { "TX1;" });
         }
-        let tuning = s.tuner == 2;
-        if ui
-            .add(egui::Button::new(RichText::new("TUNE").strong()).min_size(egui::vec2(62.0, 34.0)).fill(if tuning { AMBER } else { Color32::from_rgb(40, 34, 20) }))
-            .on_hover_text("Starts the antenna tuner — transmits a carrier")
-            .clicked()
-        {
-            rig.send("AC002;");
-        }
-        if led_button(ui, s.tuner != 0, "ATU", AMBER) {
-            rig.send(if s.tuner != 0 { "AC000;" } else { "AC001;" });
+        if s.model.has("AC") {
+            let tuning = s.tuner == 2;
+            if ui
+                .add(egui::Button::new(RichText::new("TUNE").strong()).min_size(egui::vec2(62.0, 34.0)).fill(if tuning { AMBER } else { Color32::from_rgb(40, 34, 20) }))
+                .on_hover_text("Starts the antenna tuner — transmits a carrier")
+                .clicked()
+            {
+                rig.send("AC002;");
+            }
+            if led_button(ui, s.tuner != 0, "ATU", AMBER) {
+                rig.send(if s.tuner != 0 { "AC000;" } else { "AC001;" });
+            }
         }
     });
     let half = egui::vec2((ui.available_width() - ui.spacing().item_spacing.x) / 2.0, 30.0);
@@ -604,11 +620,14 @@ fn tx_block(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
         crate::cw_key::arm_button(app, ui, half);
     });
     tx_status_line(app, ui);
+    let caps = &s.model.caps;
     ui.horizontal(|ui| {
-        ui.label("Antenna");
-        for a in 1..=3u8 {
-            if ui.selectable_label(s.antenna == a, format!("ANT {a}")).clicked() {
-                rig.send(format!("AN0{a};"));
+        if s.model.has("AN") && caps.antennas > 1 {
+            ui.label("Antenna");
+            for a in 1..=caps.antennas {
+                if ui.selectable_label(s.antenna == a, format!("ANT {a}")).clicked() {
+                    rig.send(format!("AN0{a};"));
+                }
             }
         }
         // Where the radio warns, beside the antenna it's about.
@@ -616,46 +635,51 @@ fn tx_block(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
             ui.label(RichText::new("HI-SWR").strong().color(RED));
         }
     });
-    ui.horizontal(|ui| {
-        ui.label("Radio meter");
-        let names = [(0, "COMP"), (1, "ALC"), (2, "PO"), (3, "SWR"), (4, "ID"), (5, "VDD")];
-        ComboBox::from_id_salt("ms")
-            .width(70.0)
-            .selected_text(names.iter().find(|n| n.0 == s.meter_sw).map(|n| n.1).unwrap_or("PO"))
-            .show_ui(ui, |ui| {
-                for (c, n) in names {
-                    if ui.selectable_label(s.meter_sw == c, n).clicked() {
-                        rig.send(format!("MS{c};"));
+    if s.model.has("MS") && !caps.meter_select.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label("Radio meter");
+            let names = caps.meter_select;
+            ComboBox::from_id_salt("ms")
+                .width(70.0)
+                .selected_text(names.iter().find(|n| n.0 == s.meter_sw).map(|n| n.1).unwrap_or("—"))
+                .show_ui(ui, |ui| {
+                    for &(c, n) in names {
+                        if ui.selectable_label(s.meter_sw == c, n).clicked() {
+                            rig.send(format!("MS{c};"));
+                        }
                     }
-                }
-            });
-    });
+                });
+        });
+    }
 }
 
 /// Band and mode keys in a compact block.
 fn bands_and_modes(ui: &mut Ui, rig: &Rig, s: &RadioState) {
-    let cur = types::band_of(s.freq_a).map(|b| b.code);
+    let model = s.model;
+    let cur = model.band_of(s.freq_a).map(|b| b.code);
     ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
     ui.horizontal_wrapped(|ui| {
-        for b in BANDS {
-            if b.code == 2 {
-                continue; // no band key for 60 m; tune it directly
-            }
-            let on = cur == Some(b.code);
-            if ui.add(egui::Button::new(RichText::new(b.label).strong()).min_size(egui::vec2(38.0, 24.0)).selected(on)).clicked() {
-                rig.send(format!("BS{:02};", b.code));
+        if model.has("BS") {
+            for b in model.bands {
+                if b.label == "60" {
+                    continue; // no band key for 60 m; tune it directly
+                }
+                let on = cur == Some(b.code);
+                if ui.add(egui::Button::new(RichText::new(b.label).strong()).min_size(egui::vec2(38.0, 24.0)).selected(on)).clicked() {
+                    rig.send(format!("BS{:02};", b.code));
+                }
             }
         }
-        if ui.add(egui::Button::new("◀").min_size(egui::vec2(38.0, 24.0))).on_hover_text("Band down (PageDown)").clicked() {
+        if model.has("BD") && ui.add(egui::Button::new("◀").min_size(egui::vec2(38.0, 24.0))).on_hover_text("Band down (PageDown)").clicked() {
             rig.send("BD0;");
         }
-        if ui.add(egui::Button::new("▶").min_size(egui::vec2(38.0, 24.0))).on_hover_text("Band up (PageUp)").clicked() {
+        if model.has("BU") && ui.add(egui::Button::new("▶").min_size(egui::vec2(38.0, 24.0))).on_hover_text("Band up (PageUp)").clicked() {
             rig.send("BU0;");
         }
     });
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
-        for m in Mode::ALL {
+        for &m in model.modes {
             let on = s.mode_a == Some(m);
             let r = ui.add(egui::Button::new(RichText::new(m.label()).strong()).min_size(egui::vec2(56.0, 24.0)).selected(on));
             crate::demo::mark(format!("mode:{}", m.label()), r.rect);
@@ -699,7 +723,9 @@ fn group(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
 /// a picture of the resulting audio passband.
 fn filter_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
     let Some(mode) = s.mode_a else { return };
+    let model = s.model;
     let class = s.width_class(mode);
+    let narrow_switch = model.caps.narrow && model.has("NA");
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing.y = 4.0;
@@ -711,29 +737,33 @@ fn filter_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
             } else {
                 ui.label(RichText::new(format!("{:>4} Hz", s.width_hz().unwrap_or(0))).monospace().size(18.0).color(AMBER));
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if led_button(ui, s.narrow, "NAR", AMBER) {
-                    rig.send(format!("NA0{};", (!s.narrow) as u8));
-                }
-            });
+            if narrow_switch {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if led_button(ui, s.narrow, "NAR", AMBER) {
+                        rig.send(format!("NA0{};", (!s.narrow) as u8));
+                    }
+                });
+            }
         });
-        if class != WidthClass::Fixed {
-            // Narrow and wide tables as one list, narrowest first.
-            let mut all: Vec<(u32, bool, u8)> = types::width_choices(class, true)
-                .into_iter()
-                .filter(|(i, _)| *i != 0)
+        if class != WidthClass::Fixed && model.has("SH") {
+            // Narrow and wide tables as one list, narrowest first. Index 0
+            // ("the default for the narrow/wide setting") is left out where
+            // there is a narrow switch.
+            let widths = |n: bool| (model.caps.widths)(class, n).into_iter().filter(move |(i, w)| *w != 0 && (!narrow_switch || *i != 0));
+            let mut all: Vec<(u32, bool, u8)> = widths(true)
                 .map(|(i, w)| (w, true, i))
-                .chain(types::width_choices(class, false).into_iter().filter(|(i, _)| *i != 0).map(|(i, w)| (w, false, i)))
+                .filter(|_| narrow_switch)
+                .chain(widths(false).map(|(i, w)| (w, false, i)))
                 .collect();
             all.sort_by_key(|x| (x.0, !x.1));
             all.dedup_by_key(|x| x.0);
             let cur = s.width_hz().unwrap_or(0);
             let mut pos = all
                 .iter()
-                .position(|x| x.1 == s.narrow && x.2 == s.width_index)
+                .position(|x| (!narrow_switch || x.1 == s.narrow) && x.2 == s.width_index)
                 .unwrap_or_else(|| all.iter().enumerate().min_by_key(|(_, x)| (x.0 as i64 - cur as i64).abs()).map(|(i, _)| i).unwrap_or(0));
             let set = |e: (u32, bool, u8)| {
-                if e.1 != s.narrow {
+                if narrow_switch && e.1 != s.narrow {
                     rig.send(format!("NA0{};", e.1 as u8));
                 }
                 rig.send(format!("SH0{:02};", e.2));
@@ -757,6 +787,7 @@ fn filter_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
                 }
             });
         }
+        if model.has("IS") {
         ui.horizontal(|ui| {
             ui.label("IF shift");
             let mut shift = s.if_shift;
@@ -774,6 +805,7 @@ fn filter_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
                 rig.send("IS0+0000;");
             }
         });
+        }
         passband(ui, s, mode, class);
     });
 }
@@ -816,12 +848,21 @@ fn passband(ui: &mut Ui, s: &RadioState, mode: Mode, class: WidthClass) {
 }
 
 fn receiver_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
+    let m = s.model;
+    let caps = &m.caps;
     group(ui, "Receiver", |ui| {
         egui::Grid::new("rx").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-            slider(ui, rig, "AF gain", s.af_gain as i32, 0..=255, |v| format!("AG0{v:03};"));
-            slider(ui, rig, "RF gain", s.rf_gain as i32, 0..=255, |v| format!("RG0{v:03};"));
-            slider(ui, rig, "Squelch", s.squelch as i32, 0..=255, |v| format!("SQ0{v:03};"));
-            let agc: Vec<(&str, String)> = types::AGC_SET.iter().map(|(c, l)| (*l, format!("GT0{c};"))).collect();
+            if m.has("AG") {
+                slider(ui, rig, "AF gain", s.af_gain as i32, 0..=255, |v| format!("AG0{v:03};"));
+            }
+            if m.has("RG") {
+                slider(ui, rig, "RF gain", s.rf_gain as i32, 0..=255, |v| format!("RG0{v:03};"));
+            }
+            if m.has("SQ") {
+                slider(ui, rig, "Squelch", s.squelch as i32, 0..=255, |v| format!("SQ0{v:03};"));
+            }
+            if m.has("GT") && !caps.agc.is_empty() {
+            let agc: Vec<(&str, String)> = caps.agc.iter().map(|(c, l)| (*l, format!("GT0{c};"))).collect();
             let cur_agc = types::agc_label(s.agc);
             let cur_agc = if cur_agc.starts_with("AUTO") { "AUTO" } else { cur_agc };
             // What the radio is actually doing, when AUTO picks for it.
@@ -840,137 +881,185 @@ fn receiver_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
                 }
             });
             ui.end_row();
-            ui.label("Front end");
-            ui.horizontal(|ui| {
-                for (c, l) in [(0, "IPO"), (1, "AMP1"), (2, "AMP2")] {
-                    if ui.selectable_label(s.preamp == c, l).clicked() {
-                        rig.send(format!("PA0{c};"));
+            }
+            if m.has("PA") && !caps.preamp.is_empty() {
+                ui.label("Front end");
+                ui.horizontal(|ui| {
+                    for &(c, l) in caps.preamp {
+                        if ui.selectable_label(s.preamp == c, l).clicked() {
+                            rig.send(format!("PA0{c};"));
+                        }
                     }
-                }
-            });
-            ui.end_row();
-            ui.label("Attenuator");
-            ui.horizontal(|ui| {
-                for (c, l) in [(0, "OFF"), (1, "6"), (2, "12"), (3, "18")] {
-                    if ui.selectable_label(s.att == c, l).clicked() {
-                        rig.send(format!("RA0{c};"));
+                });
+                ui.end_row();
+            }
+            if m.has("RA") && !caps.att.is_empty() {
+                ui.label("Attenuator");
+                ui.horizontal(|ui| {
+                    for &(c, l) in caps.att {
+                        if ui.selectable_label(s.att == c, l).clicked() {
+                            rig.send(format!("RA0{c};"));
+                        }
                     }
-                }
-            });
-            ui.end_row();
-            let roof: Vec<(&str, String)> = types::ROOFING_SET.iter().map(|(c, l)| (*l, format!("RF0{c};"))).collect();
-            let cur = types::roofing_label(s.roofing);
-            ui.label("Roofing");
-            ComboBox::from_id_salt("roof").width(150.0).selected_text(cur.unwrap_or("—")).show_ui(ui, |ui| {
-                for (l, cmd) in &roof {
-                    let selected = cur.is_some_and(|c| c.trim_start_matches("AUTO ") == *l) || (*l == "AUTO" && types::roofing_is_auto(s.roofing));
-                    if ui.selectable_label(selected, *l).clicked() {
-                        rig.send(cmd);
+                });
+                ui.end_row();
+            }
+            if m.has("RF") && !caps.roofing.is_empty() {
+                let roof: Vec<(&str, String)> = caps.roofing.iter().map(|(c, l)| (*l, format!("RF0{c};"))).collect();
+                let cur = m.roofing_label(s.roofing);
+                let auto = cur.is_some_and(|c| c.starts_with("AUTO"));
+                ui.label("Roofing");
+                ComboBox::from_id_salt("roof").width(150.0).selected_text(cur.unwrap_or("—")).show_ui(ui, |ui| {
+                    for (l, cmd) in &roof {
+                        let selected = cur.is_some_and(|c| c.trim_start_matches("AUTO ") == *l) || (*l == "AUTO" && auto);
+                        if ui.selectable_label(selected, *l).clicked() {
+                            rig.send(cmd);
+                        }
                     }
-                }
-            });
-            ui.end_row();
+                });
+                ui.end_row();
+            }
         });
     });
 }
 
 fn dsp_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
+    let m = s.model;
+    let caps = &m.caps;
     group(ui, "Filters & DSP", |ui| {
         egui::Grid::new("dsp").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-            ui.label("Noise blanker");
-            ui.horizontal(|ui| {
-                for (c, l) in [(0, "OFF"), (1, "NB"), (2, "WIDE")] {
-                    if ui.selectable_label(s.nb == c, l).clicked() {
-                        rig.send(format!("NB0{c};"));
+            if m.has("NB") && !caps.nb.is_empty() {
+                ui.label("Noise blanker");
+                ui.horizontal(|ui| {
+                    for &(c, l) in caps.nb {
+                        if ui.selectable_label(s.nb == c, l).clicked() {
+                            rig.send(format!("NB0{c};"));
+                        }
                     }
-                }
-            });
-            ui.end_row();
-            slider(ui, rig, "NB level", s.nb_level as i32, 0..=100, |v| format!("NL0{v:03};"));
-            ui.label("DNR");
-            ui.horizontal(|ui| {
-                if led_button(ui, s.nr, "DNR", AMBER) {
-                    rig.send(format!("NR0{};", (!s.nr) as u8));
-                }
-                let mut lvl = s.nr_level.max(1) as i32;
-                // Shorter than the others: it shares the row with the switch.
-                ui.spacing_mut().slider_width = (ui.spacing().slider_width - 60.0).max(50.0);
-                let r = ui.add(Slider::new(&mut lvl, 1..=15));
-                let steps = widgets::scroll_steps(ui, &r, 16.0);
-                if steps != 0 {
-                    lvl = (s.nr_level.max(1) as i32 + steps as i32).clamp(1, 15);
-                }
-                if steps != 0 || r.changed() {
-                    rig.send(format!("RL0{lvl:02};"));
-                }
-            });
-            ui.end_row();
-            ui.label("Notch");
-            ui.horizontal(|ui| {
-                if led_button(ui, s.auto_notch, "DNF", AMBER) {
-                    rig.send(format!("BC0{};", (!s.auto_notch) as u8));
-                }
-                if led_button(ui, s.manual_notch, "NOTCH", AMBER) {
-                    rig.send(format!("BP00{:03};", (!s.manual_notch) as u8));
-                }
-            });
-            ui.end_row();
-            slider(ui, rig, "Notch freq", s.notch_freq.max(1) as i32 * 10, 10..=4000, |v| format!("BP01{:03};", (v / 10).clamp(1, 400)));
-            ui.label("Contour / APF");
-            ui.horizontal(|ui| {
-                for (c, l) in [(0, "OFF"), (1, "CONT"), (2, "APF")] {
-                    if ui.selectable_label(s.contour_mode == c, l).clicked() {
-                        rig.send(format!("CO00{c:02};"));
+                });
+                ui.end_row();
+            }
+            if m.has("NL") {
+                let max = caps.nb_level_max as i32;
+                slider(ui, rig, "NB level", (s.nb_level as i32).min(max), 0..=max, |v| format!("NL0{v:03};"));
+            }
+            if m.has("NR") {
+                ui.label("DNR");
+                ui.horizontal(|ui| {
+                    if led_button(ui, s.nr, "DNR", AMBER) {
+                        rig.send(format!("NR0{};", (!s.nr) as u8));
                     }
+                    if m.has("RL") {
+                        let max = caps.nr_max.max(1) as i32;
+                        let mut lvl = (s.nr_level.max(1) as i32).min(max);
+                        // Shorter than the others: it shares the row with the switch.
+                        ui.spacing_mut().slider_width = (ui.spacing().slider_width - 60.0).max(50.0);
+                        let r = ui.add(Slider::new(&mut lvl, 1..=max));
+                        let steps = widgets::scroll_steps(ui, &r, 16.0);
+                        if steps != 0 {
+                            lvl = (s.nr_level.max(1) as i32 + steps as i32).clamp(1, max);
+                        }
+                        if steps != 0 || r.changed() {
+                            rig.send(format!("RL0{lvl:02};"));
+                        }
+                    }
+                });
+                ui.end_row();
+            }
+            if m.has("BC") || m.has("BP") {
+                ui.label("Notch");
+                ui.horizontal(|ui| {
+                    if m.has("BC") && led_button(ui, s.auto_notch, "DNF", AMBER) {
+                        rig.send(format!("BC0{};", (!s.auto_notch) as u8));
+                    }
+                    if m.has("BP") && led_button(ui, s.manual_notch, "NOTCH", AMBER) {
+                        rig.send(format!("BP00{:03};", (!s.manual_notch) as u8));
+                    }
+                });
+                ui.end_row();
+            }
+            if m.has("BP") {
+                slider(ui, rig, "Notch freq", s.notch_freq.max(1) as i32 * 10, 10..=4000, |v| format!("BP01{:03};", (v / 10).clamp(1, 400)));
+            }
+            if m.has("CO") {
+                ui.label("Contour / APF");
+                ui.horizontal(|ui| {
+                    for (c, l) in [(0, "OFF"), (1, "CONT"), (2, "APF")] {
+                        if ui.selectable_label(s.contour_mode == c, l).clicked() {
+                            rig.send(format!("CO00{c:02};"));
+                        }
+                    }
+                });
+                ui.end_row();
+                if s.contour_mode == 2 {
+                    slider(ui, rig, "APF offset", (s.apf_freq as i32 - 25) * 10, -250..=250, |v| format!("CO02{:02};", (v / 10 + 25).clamp(0, 50)));
+                } else {
+                    slider(ui, rig, "Contour freq", s.contour_freq.max(1) as i32 * 100, 100..=4000, |v| format!("CO01{:02};", (v / 100).clamp(1, 40)));
                 }
-            });
-            ui.end_row();
-            if s.contour_mode == 2 {
-                slider(ui, rig, "APF offset", (s.apf_freq as i32 - 25) * 10, -250..=250, |v| format!("CO02{:02};", (v / 10 + 25).clamp(0, 50)));
-            } else {
-                slider(ui, rig, "Contour freq", s.contour_freq.max(1) as i32 * 100, 100..=4000, |v| format!("CO01{:02};", (v / 100).clamp(1, 40)));
             }
         });
     });
 }
 
 fn transmitter_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
+    let m = s.model;
+    let caps = &m.caps;
     group(ui, "Transmitter", |ui| {
         egui::Grid::new("tx").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-            slider(ui, rig, "Power (W)", s.power as i32, 5..=100, |v| format!("PC{v:03};"));
-            slider(ui, rig, "Mic gain", s.mic_gain as i32, 0..=100, |v| format!("MG{v:03};"));
-            ui.label("Processor");
-            ui.horizontal(|ui| {
-                if led_button(ui, s.processor, "PROC", AMBER) {
-                    rig.send(format!("PR0{};", (!s.processor) as u8));
-                }
-                if led_button(ui, s.mic_eq, "MIC EQ", AMBER) {
-                    rig.send(format!("PR1{};", (!s.mic_eq) as u8));
-                }
-            });
-            ui.end_row();
-            slider(ui, rig, "Proc level", s.proc_level as i32, 0..=100, |v| format!("PL{v:03};"));
-            ui.label("VOX");
-            ui.horizontal(|ui| {
-                if led_button(ui, s.vox, "VOX", AMBER) {
-                    rig.send(format!("VX{};", (!s.vox) as u8));
-                }
-            });
-            ui.end_row();
-            slider(ui, rig, "VOX gain", s.vox_gain as i32, 0..=100, |v| format!("VG{v:03};"));
-            slider(ui, rig, "VOX delay (ms)", s.vox_delay.max(30) as i32, 30..=3000, |v| format!("VD{:04};", (v / 10) * 10));
-            ui.label("Monitor");
-            ui.horizontal(|ui| {
-                if led_button(ui, s.monitor, "MONI", AMBER) {
-                    rig.send(format!("ML0{:03};", (!s.monitor) as u8));
-                }
-            });
-            ui.end_row();
-            slider(ui, rig, "Monitor level", s.monitor_level.max(1) as i32, 1..=100, |v| format!("ML1{v:03};"));
+            if m.has("PC") {
+                let (lo, hi) = (caps.power.0 as i32, caps.power.1 as i32);
+                slider(ui, rig, "Power (W)", (s.power as i32).clamp(lo, hi), lo..=hi, |v| format!("PC{v:03};"));
+            }
+            if m.has("MG") {
+                slider(ui, rig, "Mic gain", s.mic_gain as i32, 0..=100, |v| format!("MG{v:03};"));
+            }
+            if m.has("PR") {
+                ui.label("Processor");
+                ui.horizontal(|ui| {
+                    if led_button(ui, s.processor, "PROC", AMBER) {
+                        rig.send(format!("PR0{};", (!s.processor) as u8));
+                    }
+                    if m.is_ftdx3000() || m.key.starts_with("ftdx") {
+                        if led_button(ui, s.mic_eq, "MIC EQ", AMBER) {
+                            rig.send(format!("PR1{};", (!s.mic_eq) as u8));
+                        }
+                    }
+                });
+                ui.end_row();
+            }
+            if m.has("PL") {
+                slider(ui, rig, "Proc level", s.proc_level as i32, 0..=100, |v| format!("PL{v:03};"));
+            }
+            if m.has("VX") {
+                ui.label("VOX");
+                ui.horizontal(|ui| {
+                    if led_button(ui, s.vox, "VOX", AMBER) {
+                        rig.send(format!("VX{};", (!s.vox) as u8));
+                    }
+                });
+                ui.end_row();
+            }
+            if m.has("VG") {
+                slider(ui, rig, "VOX gain", s.vox_gain as i32, 0..=100, |v| format!("VG{v:03};"));
+            }
+            if m.has("VD") {
+                slider(ui, rig, "VOX delay (ms)", s.vox_delay.max(30) as i32, 30..=3000, |v| format!("VD{:04};", (v / 10) * 10));
+            }
+            if m.has("ML") {
+                ui.label("Monitor");
+                ui.horizontal(|ui| {
+                    if led_button(ui, s.monitor, "MONI", AMBER) {
+                        rig.send(format!("ML0{:03};", (!s.monitor) as u8));
+                    }
+                });
+                ui.end_row();
+                slider(ui, rig, "Monitor level", s.monitor_level.max(1) as i32, 1..=100, |v| format!("ML1{v:03};"));
+            }
+            if m.has("PB") && caps.voice_memories > 0 {
             ui.label("Voice memory");
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
-                for ch in 1..=5 {
+                for ch in 1..=caps.voice_memories {
                     if ui.small_button(format!("▶{ch}")).on_hover_text(format!("Play DVS channel {ch} (transmits)")).clicked() {
                         rig.send(format!("PB0{ch};"));
                     }
@@ -980,32 +1069,38 @@ fn transmitter_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
                 }
             });
             ui.end_row();
+            }
         });
     });
 }
 
 fn clarifier_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
+    let m = s.model;
     group(ui, "Clarifier (RIT / XIT)", |ui| {
         ui.horizontal(|ui| {
-            if led_button(ui, s.rx_clar, "RX CLAR", AMBER) {
+            if m.has("RT") && led_button(ui, s.rx_clar, "RX CLAR", AMBER) {
                 rig.send(format!("RT{};", (!s.rx_clar) as u8));
             }
-            if led_button(ui, s.tx_clar, "TX CLAR", AMBER) {
+            if m.has("XT") && led_button(ui, s.tx_clar, "TX CLAR", AMBER) {
                 rig.send(format!("XT{};", (!s.tx_clar) as u8));
             }
             ui.label(RichText::new(format!("{:+} Hz", s.info_a.clar_offset)).monospace().size(20.0).color(if s.rx_clar || s.tx_clar { AMBER } else { DIM }));
         });
         ui.horizontal_wrapped(|ui| {
-            for (d, l) in [(-100, "−100"), (-10, "−10"), (10, "+10"), (100, "+100")] {
-                if ui.add(egui::Button::new(l).min_size(egui::vec2(44.0, 26.0))).clicked() {
-                    rig.send(if d < 0 { format!("RD{:04};", -d) } else { format!("RU{d:04};") });
+            if m.has("RU") {
+                for (d, l) in [(-100, "−100"), (-10, "−10"), (10, "+10"), (100, "+100")] {
+                    if ui.add(egui::Button::new(l).min_size(egui::vec2(44.0, 26.0))).clicked() {
+                        rig.send(if d < 0 { format!("RD{:04};", -d) } else { format!("RU{d:04};") });
+                    }
                 }
             }
-            if button(ui, "CLEAR") {
+            if m.has("RC") && button(ui, "CLEAR") {
                 rig.send("RC;");
             }
         });
-        ui.label(RichText::new("The FTDX3000 has one clarifier offset shared by RX and TX clarifier.").weak().size(11.0));
+        if m.caps.shared_clarifier {
+            ui.label(RichText::new(format!("The {} has one clarifier offset shared by RX and TX clarifier.", m.name)).weak().size(11.0));
+        }
     });
 }
 
@@ -1073,7 +1168,7 @@ fn macro_group(ui: &mut Ui, app: &mut App, rig: &Rig) {
                 }
                 save = ui.button("Save").clicked();
             });
-            ui.label(RichText::new("Any FTDX3000 CAT commands, separated by ';'. See the CAT console to try them.").weak().size(11.0));
+            ui.label(RichText::new("Any RigHelm CAT commands (the FTDX3000's, whatever the radio), separated by ';'. See the CAT console to try them.").weak().size(11.0));
         });
         if save {
             match app.services.config.save() {
@@ -1085,27 +1180,40 @@ fn macro_group(ui: &mut Ui, app: &mut App, rig: &Rig) {
 }
 
 fn cw_group(ui: &mut Ui, op: &mut OperateState, rig: &Rig, s: &RadioState) {
+    let m = s.model;
+    let caps = &m.caps;
     group(ui, "CW", |ui| {
         egui::Grid::new("cw").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
             ui.label("Keyer");
             ui.horizontal(|ui| {
-                if led_button(ui, s.keyer, "KEYER", AMBER) {
+                if m.has("KR") && led_button(ui, s.keyer, "KEYER", AMBER) {
                     rig.send(format!("KR{};", (!s.keyer) as u8));
                 }
-                if led_button(ui, s.break_in, "BK-IN", AMBER) {
+                if m.has("BI") && led_button(ui, s.break_in, "BK-IN", AMBER) {
                     rig.send(format!("BI{};", (!s.break_in) as u8));
                 }
-                if led_button(ui, s.cw_spot, "SPOT", AMBER) {
+                if m.has("CS") && led_button(ui, s.cw_spot, "SPOT", AMBER) {
                     rig.send(format!("CS{};", (!s.cw_spot) as u8));
                 }
             });
             ui.end_row();
-            slider(ui, rig, "Speed (WPM)", s.key_speed.max(4) as i32, 4..=60, |v| format!("KS{v:03};"));
-            slider(ui, rig, "Pitch (Hz)", 300 + 10 * s.key_pitch as i32, 300..=1050, |v| format!("KP{:02};", ((v - 300) / 10).clamp(0, 75)));
-            slider(ui, rig, "BK-IN delay (ms)", s.bk_delay.max(30) as i32, 30..=3000, |v| format!("SD{:04};", (v / 10) * 10));
+            if m.has("KS") {
+                slider(ui, rig, "Speed (WPM)", s.key_speed.max(4) as i32, 4..=60, |v| format!("KS{v:03};"));
+            }
+            if m.has("KP") {
+                slider(ui, rig, "Pitch (Hz)", 300 + 10 * s.key_pitch as i32, 300..=1050, |v| format!("KP{:02};", ((v - 300) / 10).clamp(0, 75)));
+            }
+            if m.has("SD") {
+                slider(ui, rig, "BK-IN delay (ms)", s.bk_delay.max(30) as i32, 30..=3000, |v| format!("SD{:04};", (v / 10) * 10));
+            }
         });
-        ui.label(RichText::new("Keyer memories (up to 50 characters)").strong());
-        for i in 0..5 {
+        let n = if m.has("KM") || m.has("KY") { caps.keyer_memories as usize } else { 0 };
+        if n == 0 {
+            return;
+        }
+        let len = caps.keyer_memory_len as usize;
+        ui.label(RichText::new(format!("Keyer memories (up to {len} characters)")).strong());
+        for i in 0..n.min(5) {
             if !op.keyer_loaded[i] {
                 if let Some(t) = &s.keyer_memory[i] {
                     op.keyer_text[i] = t.trim_end().to_string();
@@ -1116,8 +1224,8 @@ fn cw_group(ui: &mut Ui, op: &mut OperateState, rig: &Rig, s: &RadioState) {
                 if ui.button(format!("▶ {}", i + 1)).on_hover_text("Send this keyer memory (transmits)").clicked() {
                     rig.send(format!("KY{};", i + 1));
                 }
-                ui.add(egui::TextEdit::singleline(&mut op.keyer_text[i]).char_limit(50).desired_width((ui.available_width() - 56.0).max(80.0)));
-                if ui.small_button("Save").on_hover_text("Write this text into the radio's keyer memory").clicked() {
+                ui.add(egui::TextEdit::singleline(&mut op.keyer_text[i]).char_limit(len).desired_width((ui.available_width() - 56.0).max(80.0)));
+                if m.has("KM") && ui.small_button("Save").on_hover_text("Write this text into the radio's keyer memory").clicked() {
                     let text: String = op.keyer_text[i].chars().filter(|c| c.is_ascii() && *c != ';').collect();
                     rig.send(format!("KM{}{};", i + 1, text.to_uppercase()));
                 }

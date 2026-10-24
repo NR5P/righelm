@@ -10,6 +10,8 @@ pub use engine::{CatError, EngineConfig, Freshness, LinkState, Rig, Source};
 pub mod comport;
 #[cfg(unix)]
 pub mod pty;
+#[cfg(unix)]
+pub mod hamlib_check;
 pub mod vport;
 pub mod rigctld;
 pub mod services;

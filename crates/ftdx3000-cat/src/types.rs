@@ -16,9 +16,24 @@ pub enum Mode {
     FmN,
     DataUsb,
     AmN,
+    // Modes other radios have. Their codes (E-J) exist only inside RigHelm;
+    // each radio's translator maps them to its own.
+    /// Yaesu System Fusion digital voice.
+    C4fm,
+    /// Icom D-STAR digital voice.
+    Dv,
+    /// Wide FM (broadcast receive).
+    Wfm,
+    /// AM with the DATA input (Icom AM-D).
+    DataAm,
+    /// The radio's own PSK mode (FTDX101, FTDX10, FT-710).
+    Psk,
+    /// Narrow FM with the DATA input.
+    DataFmN,
 }
 
 impl Mode {
+    /// The FTDX3000's modes, in front-panel order.
     pub const ALL: [Mode; 13] = [
         Mode::Lsb,
         Mode::Usb,
@@ -33,6 +48,29 @@ impl Mode {
         Mode::DataLsb,
         Mode::DataUsb,
         Mode::DataFm,
+    ];
+
+    /// Every mode RigHelm knows, the FTDX3000's first.
+    pub const EVERY: [Mode; 19] = [
+        Mode::Lsb,
+        Mode::Usb,
+        Mode::Cw,
+        Mode::CwR,
+        Mode::Am,
+        Mode::AmN,
+        Mode::Fm,
+        Mode::FmN,
+        Mode::RttyLsb,
+        Mode::RttyUsb,
+        Mode::DataLsb,
+        Mode::DataUsb,
+        Mode::DataFm,
+        Mode::DataFmN,
+        Mode::DataAm,
+        Mode::Psk,
+        Mode::C4fm,
+        Mode::Dv,
+        Mode::Wfm,
     ];
 
     pub fn from_code(c: char) -> Option<Mode> {
@@ -50,6 +88,12 @@ impl Mode {
             'B' => Mode::FmN,
             'C' => Mode::DataUsb,
             'D' => Mode::AmN,
+            'E' => Mode::C4fm,
+            'F' => Mode::Dv,
+            'G' => Mode::Wfm,
+            'H' => Mode::DataAm,
+            'I' => Mode::Psk,
+            'J' => Mode::DataFmN,
             _ => return None,
         })
     }
@@ -69,6 +113,12 @@ impl Mode {
             Mode::FmN => 'B',
             Mode::DataUsb => 'C',
             Mode::AmN => 'D',
+            Mode::C4fm => 'E',
+            Mode::Dv => 'F',
+            Mode::Wfm => 'G',
+            Mode::DataAm => 'H',
+            Mode::Psk => 'I',
+            Mode::DataFmN => 'J',
         }
     }
 
@@ -88,6 +138,12 @@ impl Mode {
             Mode::DataLsb => "DATA-L",
             Mode::DataUsb => "DATA-U",
             Mode::DataFm => "DATA-FM",
+            Mode::C4fm => "C4FM",
+            Mode::Dv => "DV",
+            Mode::Wfm => "WFM",
+            Mode::DataAm => "DATA-AM",
+            Mode::Psk => "PSK",
+            Mode::DataFmN => "DATA-FMN",
         }
     }
 
@@ -107,11 +163,17 @@ impl Mode {
             Mode::DataLsb => "PKTLSB",
             Mode::DataUsb => "PKTUSB",
             Mode::DataFm => "PKTFM",
+            Mode::C4fm => "C4FM",
+            Mode::Dv => "DSTAR",
+            Mode::Wfm => "WFM",
+            Mode::DataAm => "PKTAM",
+            Mode::Psk => "PSK",
+            Mode::DataFmN => "PKTFMN",
         }
     }
 
     pub fn from_hamlib(s: &str) -> Option<Mode> {
-        Mode::ALL.into_iter().find(|m| m.hamlib().eq_ignore_ascii_case(s))
+        Mode::EVERY.into_iter().find(|m| m.hamlib().eq_ignore_ascii_case(s))
     }
 
     /// Which column of the width table (Table 5) applies.
@@ -119,8 +181,10 @@ impl Mode {
         match self {
             Mode::Lsb | Mode::Usb | Mode::DataLsb | Mode::DataUsb => WidthClass::Ssb,
             Mode::Cw | Mode::CwR => WidthClass::Cw,
-            Mode::RttyLsb | Mode::RttyUsb => WidthClass::Rtty,
-            Mode::Am | Mode::AmN | Mode::Fm | Mode::FmN | Mode::DataFm => WidthClass::Fixed,
+            Mode::RttyLsb | Mode::RttyUsb | Mode::Psk => WidthClass::Rtty,
+            Mode::Am | Mode::AmN | Mode::Fm | Mode::FmN | Mode::DataFm | Mode::DataFmN | Mode::DataAm | Mode::C4fm | Mode::Dv | Mode::Wfm => {
+                WidthClass::Fixed
+            }
         }
     }
 
@@ -131,6 +195,14 @@ impl Mode {
     /// Phone modes, whose transmit audio is a microphone (not DATA/RTTY/CW).
     pub fn is_voice(self) -> bool {
         matches!(self, Mode::Lsb | Mode::Usb | Mode::Am | Mode::AmN | Mode::Fm | Mode::FmN)
+    }
+
+    /// AM or FM of any kind (a carrier in the middle of the passband).
+    pub fn is_am_fm(self) -> bool {
+        matches!(
+            self,
+            Mode::Am | Mode::AmN | Mode::Fm | Mode::FmN | Mode::DataFm | Mode::DataFmN | Mode::DataAm | Mode::C4fm | Mode::Dv | Mode::Wfm
+        )
     }
 }
 
@@ -399,7 +471,7 @@ mod tests {
 
     #[test]
     fn mode_round_trip() {
-        for m in Mode::ALL {
+        for m in Mode::EVERY {
             assert_eq!(Mode::from_code(m.code()), Some(m));
             assert_eq!(Mode::from_hamlib(m.hamlib()), Some(m));
         }

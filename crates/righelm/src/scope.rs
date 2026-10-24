@@ -187,7 +187,7 @@ fn follow(center: Option<f64>, vfo: f64, span: f64, covers: Option<(f64, f64)>) 
 fn rf_passband(s: &RadioState) -> Option<(f64, f64)> {
     let (dial, mode) = rx_vfo(s)?;
     match mode {
-        Mode::Am | Mode::AmN | Mode::Fm | Mode::FmN | Mode::DataFm => {
+        m if m.is_am_fm() => {
             let w = s.width_hz().unwrap_or(if matches!(mode, Mode::Am | Mode::AmN) { 6000 } else { 12000 }) as f64;
             Some((dial as f64 - w / 2.0, dial as f64 + w / 2.0))
         }
@@ -217,13 +217,13 @@ fn target(s: &RadioState, signal: Option<Signal>, rf: f64) -> Option<Target> {
             Some((f, name)) => (f, name),
             None => (heard_at(centre_af(), middle)?, "centred"),
         },
-        Mode::RttyUsb | Mode::RttyLsb => (heard_at(centre_af(), middle)?, "centred"),
+        Mode::RttyUsb | Mode::RttyLsb | Mode::Psk => (heard_at(centre_af(), middle)?, "centred"),
         Mode::Usb | Mode::Lsb => match signal {
             Some(g) if g.width_hz() >= 500.0 => (if mode == Mode::Usb { g.lo_hz - 150.0 } else { g.hi_hz + 150.0 }, "on the carrier"),
             Some(g) => (heard_at(centre_af(), g.peak_hz)?, "centred"),
             None => (rf, ""),
         },
-        Mode::Am | Mode::AmN | Mode::Fm | Mode::FmN | Mode::DataFm => (signal.map_or(rf, |g| g.peak_hz), "on the carrier"),
+        _ => (signal.map_or(rf, |g| g.peak_hz), "on the carrier"),
     };
     // CW tunes to the hertz; everything else to 10 Hz.
     let hz = if mode.is_cw() { hz.round() } else { (hz / 10.0).round() * 10.0 };

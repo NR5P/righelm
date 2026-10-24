@@ -25,7 +25,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ftdx3000_cat::Framer;
+use ftdx3000_cat::model::FTDX3000;
+use ftdx3000_cat::{Framer, RadioModel};
 use hmac::{Hmac, KeyInit, Mac};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -169,18 +170,21 @@ pub struct Found {
     pub mic: bool,
     /// The server's own radio link state ("connected", "no-response", ...).
     pub radio: String,
+    /// Which radio it is (older servers don't say: an FTDX3000).
+    pub model: &'static RadioModel,
     pub last_seen: Instant,
 }
 
-fn beacon_text(cfg: &RemoteServerConfig, port: u16, radio: &str) -> String {
+fn beacon_text(cfg: &RemoteServerConfig, port: u16, radio: &str, model: &RadioModel) -> String {
     let name = if cfg.name.is_empty() { hostname() } else { cfg.name.clone() };
     let name: String = name.chars().filter(|c| *c != ';' && *c != '=').collect();
     format!(
-        "{GREETING} v{PROTOCOL};id={:016x};name={name};port={port};audio={};auth={};mic={};radio={radio}",
+        "{GREETING} v{PROTOCOL};id={:016x};name={name};port={port};audio={};auth={};mic={};radio={radio};model={}",
         instance_id(),
         cfg.audio as u8,
         (!cfg.password.is_empty()) as u8,
-        (cfg.audio && cfg.tx_audio && tx_allowed(cfg)) as u8
+        (cfg.audio && cfg.tx_audio && tx_allowed(cfg)) as u8,
+        model.key
     )
 }
 
@@ -203,6 +207,7 @@ fn parse_beacon(text: &str, from: SocketAddr) -> Option<Found> {
         auth: fields.get("auth") == Some(&"1"),
         mic: fields.get("mic") == Some(&"1"),
         radio: fields.get("radio").unwrap_or(&"?").to_string(),
+        model: fields.get("model").and_then(|k| ftdx3000_cat::model::by_key(k)).unwrap_or(&FTDX3000),
         last_seen: Instant::now(),
     })
 }
@@ -372,7 +377,7 @@ impl RemoteServer {
                         crate::LinkState::NoResponse { .. } => "not-answering",
                         _ => "disconnected",
                     };
-                    let text = beacon_text(&cfg, addr.port(), radio);
+                    let text = beacon_text(&cfg, addr.port(), radio, rig.model());
                     if last.elapsed() > Duration::from_secs(2) {
                         for t in broadcast_targets() {
                             let _ = sock.send_to(text.as_bytes(), t);
@@ -656,7 +661,7 @@ fn serve_session(
         }
     }
     let session = random_u64();
-    stream.write_all(format!("OK {session:016x} {} {AUDIO_RATE}\n", stream.local_addr()?.port()).as_bytes())?;
+    stream.write_all(format!("OK {session:016x} {} {AUDIO_RATE} {}\n", stream.local_addr()?.port(), rig.model().key).as_bytes())?;
     let who = format!("remote {}", peer.ip());
     match mode.as_str() {
         "CAT" => {
@@ -734,8 +739,14 @@ fn serve_cat(rig: &Rig, cfg: &RemoteServerConfig, stream: TcpStream, mut reader:
     let mut framer = Framer::new();
     let mut buf = [0u8; 1024];
     let mut last_rx = Instant::now();
+    let model = rig.model();
     let result = loop {
         if stop.load(Ordering::Relaxed) {
+            break Ok(());
+        }
+        // The client was told which radio this is; if another one has been
+        // connected since, it must reconnect to find out.
+        if rig.model() != model {
             break Ok(());
         }
         if last_rx.elapsed() > CAT_IDLE_TIMEOUT {
@@ -781,6 +792,11 @@ fn tx_allowed(cfg: &RemoteServerConfig) -> bool {
 /// Connect, greet and authenticate. Returns the stream positioned after `OK`,
 /// the session id, server UDP port and audio rate.
 fn handshake(addr: &str, password: &str, mode: &str) -> io::Result<(TcpStream, String, u64, u16, u32)> {
+    handshake_model(addr, password, mode).map(|(h, _)| h)
+}
+
+/// [`handshake`], and the radio model the server has.
+fn handshake_model(addr: &str, password: &str, mode: &str) -> io::Result<((TcpStream, String, u64, u16, u32), &'static RadioModel)> {
     let mut addrs: Vec<SocketAddr> = std::net::ToSocketAddrs::to_socket_addrs(addr)?.collect();
     // "localhost" often resolves to ::1 first; servers usually listen on IPv4.
     addrs.sort_by_key(|a| a.is_ipv6());
@@ -819,9 +835,11 @@ fn handshake(addr: &str, password: &str, mode: &str) -> io::Result<(TcpStream, S
             if !(8_000..=48_000).contains(&rate) {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, format!("unsupported audio rate {rate}")));
             }
+            // Servers before multi-radio support say nothing: an FTDX3000.
+            let model = it.next().and_then(ftdx3000_cat::model::by_key).unwrap_or(&FTDX3000);
             // Anything the BufReader read ahead would be lost; the server
             // sends nothing until we do, so there is none.
-            Ok((stream, server_name, session, udp_port, rate))
+            Ok(((stream, server_name, session, udp_port, rate), model))
         }
         Some("DENIED") => Err(io::Error::new(io::ErrorKind::PermissionDenied, line.trim().trim_start_matches("DENIED ").to_string())),
         _ => Err(io::Error::new(io::ErrorKind::InvalidData, format!("unexpected reply: {}", line.trim()))),
@@ -852,15 +870,17 @@ impl Read for TcpReader {
     }
 }
 
-/// Open a remote CAT link for the engine.
-pub fn connect_cat(target: &RemoteTarget) -> io::Result<Link> {
-    let (stream, name, _, _, _) = handshake(&target.addr, &target.password, "CAT")?;
+/// Open a remote CAT link for the engine, and say which radio is behind it.
+/// The link speaks RigHelm's language: the server translates for its radio.
+pub fn connect_cat(target: &RemoteTarget) -> io::Result<(Link, &'static RadioModel)> {
+    let ((stream, name, _, _, _), model) = handshake_model(&target.addr, &target.password, "CAT")?;
     stream.set_read_timeout(Some(Duration::from_millis(50)))?;
-    Ok(Link {
+    let link = Link {
         reader: Box::new(TcpReader(stream.try_clone()?)),
         writer: Box::new(stream),
-        description: format!("remote radio \"{name}\" at {}", target.addr),
-    })
+        description: format!("remote {} \"{name}\" at {}", model.name, target.addr),
+    };
+    Ok((link, model))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1443,7 +1463,7 @@ mod tests {
     #[test]
     fn beacon_round_trip() {
         let cfg = RemoteServerConfig { name: "shack".into(), password: "x".into(), ..Default::default() };
-        let text = beacon_text(&cfg, 4533, "connected");
+        let text = beacon_text(&cfg, 4533, "connected", &FTDX3000);
         let f = parse_beacon(&text, "192.168.1.5:4534".parse().unwrap()).unwrap();
         assert_eq!(f.name, "shack");
         assert_eq!(f.addr, "192.168.1.5:4533".parse().unwrap());
@@ -1480,7 +1500,7 @@ mod tests {
 
         // A client engine drives the server's radio.
         let client = Rig::start();
-        let link = connect_cat(&RemoteTarget { addr: addr.clone(), password: "secret".into() }).unwrap();
+        let link = connect_cat(&RemoteTarget { addr: addr.clone(), password: "secret".into() }).unwrap().0;
         client.connect_link(link, EngineConfig { read_menu_on_connect: false, ..Default::default() });
         let fa = client.read("FA;", crate::Freshness::Radio, Source::Gui, Duration::from_secs(3)).unwrap();
         assert_eq!(fa, "FA14074000;");
@@ -1523,7 +1543,7 @@ mod tests {
         let target = RemoteTarget { addr: server.addr.to_string(), password: "pw".into() };
         // The client mirrors the remote radio's state over its own CAT session.
         let client_rig = Rig::start();
-        client_rig.connect_link(connect_cat(&target).unwrap(), EngineConfig { read_menu_on_connect: false, ..Default::default() });
+        client_rig.connect_link(connect_cat(&target).unwrap().0, EngineConfig { read_menu_on_connect: false, ..Default::default() });
         let client = AudioClient::start(
             client_rig.clone(),
             target,
@@ -1580,7 +1600,7 @@ mod tests {
             ScopeTap::default(),
         )
         .unwrap();
-        let link = connect_cat(&RemoteTarget { addr: secured.addr.to_string(), password: "pw".into() }).unwrap();
+        let link = connect_cat(&RemoteTarget { addr: secured.addr.to_string(), password: "pw".into() }).unwrap().0;
         let mut w = link.writer;
         w.write_all(b"TX1;").unwrap();
         let t0 = Instant::now();
