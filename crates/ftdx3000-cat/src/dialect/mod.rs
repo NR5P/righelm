@@ -44,15 +44,18 @@ pub struct Back {
     pub frames: Vec<String>,
     /// It was the answer to the command being waited for.
     pub reply: bool,
+    /// Send these next, before anything else queued (a command that needs
+    /// what the radio just said).
+    pub then: Vec<Out>,
 }
 
 impl Back {
     pub fn frames(frames: Vec<String>) -> Back {
-        Back { frames, reply: false }
+        Back { frames, reply: false, then: Vec::new() }
     }
 
     pub fn reply(frames: Vec<String>) -> Back {
-        Back { frames, reply: true }
+        Back { frames, reply: true, then: Vec::new() }
     }
 }
 
@@ -88,6 +91,11 @@ pub trait Emulator: Send {
     /// An unsolicited RigHelm frame (auto-information) as the radio would
     /// send it, if the program asked for those.
     fn unsolicited(&mut self, frame: &str) -> Option<Vec<u8>>;
+    /// RigHelm Sets to carry out after answering the last request (when
+    /// what to set depended on a read).
+    fn after(&mut self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// A command from a program, as RigHelm commands.

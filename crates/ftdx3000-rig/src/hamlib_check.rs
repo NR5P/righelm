@@ -98,6 +98,11 @@ pub fn rigctl(model: &'static RadioModel, port: &SimPort, cmds: &[&str]) -> Opti
     if let Some(&b) = model.bauds.first() {
         c.arg("-s").arg(b.to_string());
     }
+    // Icom: the model's CI-V address (Hamlib's default may be another
+    // model's, as for the IC-7300MK2).
+    if model.family == ftdx3000_cat::Family::Icom {
+        c.arg(format!("--civaddr=0x{:02X}", model.civ_addr));
+    }
     // A PTY has no handshake lines.
     if model.rts_cts {
         c.arg("--set-conf=serial_handshake=None");

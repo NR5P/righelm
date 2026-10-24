@@ -400,6 +400,9 @@ impl Pump {
             if back.reply {
                 self.waiting = None;
             }
+            for o in back.then.into_iter().rev() {
+                self.queue.push_front(o);
+            }
             self.pass_up(back.frames);
         }
     }

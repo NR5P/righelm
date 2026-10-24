@@ -22,6 +22,8 @@ pub enum Kind {
     Tone,
     /// Free text (e.g. the opening call sign).
     Text { max: usize },
+    /// A level `0..=max` shown as 0-100 % (Icom's 0-255 settings).
+    Percent { max: i32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -379,6 +381,7 @@ impl MenuItem {
             Kind::Steps { max_code, .. } => (0..=max_code).contains(&v),
             Kind::MicGain => (0..=100).contains(&v) || v == 1000,
             Kind::Tone => (0..50).contains(&v),
+            Kind::Percent { max } => (0..=max).contains(&v),
             Kind::Text { .. } => unreachable!(),
         };
         ok.then_some(Value::Int(v))
@@ -418,6 +421,7 @@ impl MenuItem {
                         format!("{sign}{v} {unit}")
                     }
                 }
+                Kind::Percent { max } => format!("{}%", (v as f32 * 100.0 / max.max(1) as f32).round()),
                 Kind::MicGain => {
                     if v == 1000 {
                         "MCVR".to_string()

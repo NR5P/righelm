@@ -174,7 +174,22 @@ fn value_editor(app: &mut App, ui: &mut Ui, item: &MenuItem, raw: Option<&str>) 
                 app.menu.num_edits.remove(&item.num);
             }
         }
-        (Kind::MicGain, Some(Value::Int(v))) => {
+        (Kind::Percent { max }, Some(Value::Int(v))) => {
+            let mut edit = app.menu.num_edits.get(&item.num).copied().unwrap_or(v);
+            let dv = DragValue::new(&mut edit).range(0..=max).custom_formatter(move |x, _| format!("{:.0}%", x * 100.0 / max.max(1) as f64));
+            let r = ui.add(dv);
+            if r.drag_stopped() || r.lost_focus() {
+                app.menu.num_edits.remove(&item.num);
+                if edit != v {
+                    send_item(app, item, &Value::Int(edit), raw);
+                }
+            } else if r.dragged() || r.has_focus() {
+                app.menu.num_edits.insert(item.num, edit);
+            } else {
+                app.menu.num_edits.remove(&item.num);
+            }
+        }
+                (Kind::MicGain, Some(Value::Int(v))) => {
             ui.horizontal(|ui| {
                 let mut mcvr = v == 1000;
                 if ui.checkbox(&mut mcvr, "MCVR (front knob)").changed() {

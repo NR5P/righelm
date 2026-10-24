@@ -76,7 +76,7 @@ fn every_model_answers_what_it_says_it_has() {
     each_model(|m| {
         let (rig, _sim) = start(m);
         for cmd in READS {
-            if m.has(&cmd[..2]) {
+            if m.has_key(&cmd[..cmd.len() - 1]) {
                 let a = read(&rig, m, cmd);
                 assert!(a.starts_with(&cmd[..2]), "{}: {cmd} answered {a}", m.key);
             } else {

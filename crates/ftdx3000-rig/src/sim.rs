@@ -106,6 +106,11 @@ impl SimCore {
             }
         }
         answers.insert("ID".into(), format!("ID{};", model.id));
+        for a in model.sim {
+            if let Some(k) = command::answer_key(a) {
+                answers.insert(k, a.to_string());
+            }
+        }
         for item in model.menu {
             answers.insert(format!("EX{:03}", item.num), format!("EX{:03}{};", item.num, default_menu_raw(model, item)));
         }
@@ -586,6 +591,9 @@ impl SimLine {
                 out.extend_from_slice(&em.respond(&req, &answers));
             } else {
                 out.extend_from_slice(&em.respond(&req, &[]));
+            }
+            for set in em.after() {
+                c.handle(&set);
             }
         }
         let pushed: Vec<String> = c.outbox.drain(..).collect();

@@ -214,8 +214,19 @@ pub struct RadioModel {
 }
 
 impl RadioModel {
+    /// The radio has (some of) this two-letter command.
     pub fn has(&self, code: &str) -> bool {
-        self.caps.commands.iter().any(|c| c.eq_ignore_ascii_case(code))
+        let code = &code[..2.min(code.len())];
+        self.caps.commands.iter().any(|c| c.len() >= 2 && c[..2].eq_ignore_ascii_case(code))
+    }
+
+    /// The radio has this exact RigHelm item (`BP01`, `CO02`, `ML1`): a
+    /// command listed in `caps.commands` as just its two letters has all of
+    /// them; one listed with parameters (`BP00`) only those.
+    pub fn has_key(&self, key: &str) -> bool {
+        let code = &key[..2.min(key.len())];
+        let entries: Vec<&&str> = self.caps.commands.iter().filter(|c| c.len() >= 2 && c[..2].eq_ignore_ascii_case(code)).collect();
+        entries.iter().any(|c| c.len() == 2) || entries.iter().any(|c| key.len() >= c.len() && key[..c.len()].eq_ignore_ascii_case(c))
     }
 
     /// Display name with the maker: "Yaesu FTDX3000".
@@ -409,7 +420,7 @@ mod tests {
                 assert!(m.menu_item(*r).is_some(), "{} role item {r}", m.key);
             }
             for c in m.caps.commands {
-                assert!(crate::command::lookup(c).is_some(), "{} command {c}", m.key);
+                assert!(crate::command::lookup(&c[..2]).is_some(), "{} command {c}", m.key);
             }
             match m.family {
                 Family::Icom => assert!(m.civ_addr != 0, "{}", m.key),

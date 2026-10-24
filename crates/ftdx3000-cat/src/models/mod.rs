@@ -22,6 +22,10 @@ pub mod ts2000;
 pub mod ts480;
 pub mod k3;
 pub mod k4;
+pub mod ic7300;
+pub mod ic7610;
+pub mod ic705;
+pub mod ic9700;
 
 /// Every supported radio, FTDX3000 first. Where several share an `ID;`
 /// answer, the first listed is the one detected.
@@ -48,4 +52,9 @@ pub static ALL: &[&RadioModel] = &[
     &k3::KX3,
     &k3::KX2,
     &k4::K4,
+    &ic7300::IC7300,
+    &ic7300::IC7300MK2,
+    &ic7610::IC7610,
+    &ic705::IC705,
+    &ic9700::IC9700,
 ];

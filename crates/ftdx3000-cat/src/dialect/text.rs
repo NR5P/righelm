@@ -108,7 +108,8 @@ impl TextDialect {
 impl Dialect for TextDialect {
     fn command(&mut self, f: &str) -> Vec<Out> {
         let req = command::classify(f);
-        let has = frame::split(f).is_some_and(|(c, _)| self.cx.model.has(&c));
+        let key = command::answer_key(f).unwrap_or_default();
+        let has = !key.is_empty() && self.cx.model.has_key(&key);
         let native = if has && req != CatRequest::Unknown { (self.spec.down)(&mut self.cx, f) } else { Vec::new() };
         if native.is_empty() {
             return vec![Out::reject()];
