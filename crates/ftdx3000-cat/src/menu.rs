@@ -1,4 +1,5 @@
-//! The 196 `EX` menu items (CAT reference Tables 2-4).
+//! Menu items, and the FTDX3000's 196 `EX` menu items (CAT reference
+//! Tables 2-4). Other radios' menus are in [`crate::models`].
 //!
 //! The reference book does not state the digit count of every parameter, so
 //! each item carries a best-guess `width`. The engine always reads a menu item
@@ -21,11 +22,17 @@ pub enum Kind {
     Tone,
     /// Free text (e.g. the opening call sign).
     Text { max: usize },
+    /// A level `0..=max` shown as 0-100 % (Icom's 0-255 settings).
+    Percent { max: i32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MenuItem {
+    /// RigHelm's number for it (`EXnnn`): its place in the model's table.
     pub num: u16,
+    /// The radio's own address for it, where that differs from `num`
+    /// (FTDX101 `EX030201` = 0x030201, Icom `1A 05 00 71` = 0x0071).
+    pub addr: u32,
     pub group: &'static str,
     pub name: &'static str,
     /// Expected number of parameter characters (including any sign).
@@ -41,14 +48,14 @@ pub enum Value {
 }
 
 const fn m(num: u16, group: &'static str, name: &'static str, width: u8, kind: Kind) -> MenuItem {
-    MenuItem { num, group, name, width, kind }
+    MenuItem { num, addr: num as u32, group, name, width, kind }
 }
 
-const fn num(min: i32, max: i32, step: i32, unit: &'static str) -> Kind {
+pub const fn num(min: i32, max: i32, step: i32, unit: &'static str) -> Kind {
     Kind::Num { min, max, step, unit, signed: false, div: 1 }
 }
 
-const fn signed(min: i32, max: i32, step: i32, unit: &'static str) -> Kind {
+pub const fn signed(min: i32, max: i32, step: i32, unit: &'static str) -> Kind {
     Kind::Num { min, max, step, unit, signed: true, div: 1 }
 }
 
@@ -374,6 +381,7 @@ impl MenuItem {
             Kind::Steps { max_code, .. } => (0..=max_code).contains(&v),
             Kind::MicGain => (0..=100).contains(&v) || v == 1000,
             Kind::Tone => (0..50).contains(&v),
+            Kind::Percent { max } => (0..=max).contains(&v),
             Kind::Text { .. } => unreachable!(),
         };
         ok.then_some(Value::Int(v))
@@ -413,6 +421,7 @@ impl MenuItem {
                         format!("{sign}{v} {unit}")
                     }
                 }
+                Kind::Percent { max } => format!("{}%", (v as f32 * 100.0 / max.max(1) as f32).round()),
                 Kind::MicGain => {
                     if v == 1000 {
                         "MCVR".to_string()

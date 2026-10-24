@@ -1,7 +1,7 @@
 //! Headless rig server: owns the radio's CAT port and shares it through
 //! virtual serial ports and a rigctld-compatible TCP server.
 //!
-//!     righelmd [--port PATH] [--baud N] [--no-rigctld] [--detect] [--discover]
+//!     righelmd [--port PATH] [--baud N] [--model KEY] [--no-rigctld] [--detect] [--discover]
 //!
 //! Uses the same config file as the GUI (~/.config/ftdx3000/config.toml).
 
@@ -25,6 +25,14 @@ fn main() {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--port" => config.engine.serial.path = args.next().expect("--port PATH"),
+            "--model" => {
+                let key = args.next().expect("--model KEY");
+                if key != "auto" && ftdx3000_cat::model::by_key(&key).is_none() {
+                    eprintln!("unknown radio model \"{key}\"; known: {}", ftdx3000_cat::model::all().iter().map(|m| m.key).collect::<Vec<_>>().join(", "));
+                    std::process::exit(2);
+                }
+                config.engine.model = if key == "auto" { String::new() } else { key };
+            }
             "--baud" => config.engine.serial.baud = args.next().and_then(|b| b.parse().ok()).expect("--baud N"),
             "--no-rigctld" => config.rigctld.enabled = false,
             "--rigctld" => config.rigctld.bind = args.next().expect("--rigctld ADDR:PORT"),
@@ -38,7 +46,7 @@ fn main() {
                 return;
             }
             "-h" | "--help" => {
-                println!("righelmd [--port PATH] [--baud N] [--rigctld ADDR:PORT | --no-rigctld] [--no-menu] [--detect] [--discover]");
+                println!("righelmd [--port PATH] [--baud N] [--model KEY|auto] [--rigctld ADDR:PORT | --no-rigctld] [--no-menu] [--detect] [--discover]");
                 return;
             }
             other => {
@@ -49,9 +57,9 @@ fn main() {
     }
     if config.engine.serial.path.is_empty() {
         match config.autodetect_port() {
-            Some(r) => log::info!("auto-detected FTDX3000 CAT port {}", r.cat.stable_path()),
+            Some(r) => log::info!("auto-detected {} CAT port {}", r.title(), r.cat.stable_path()),
             None => {
-                eprintln!("no FTDX3000 found; use --port PATH");
+                eprintln!("no radio found; use --port PATH");
                 std::process::exit(1);
             }
         }
@@ -115,11 +123,11 @@ fn print_discover() {
 fn print_detect() {
     let radios = detect::detect_radios();
     if radios.is_empty() {
-        println!("No FTDX3000 (CP2105 USB bridge) found.");
+        println!("No radio found on USB (Silicon Labs, Icom or FTDI bridge).");
     }
     for r in radios {
-        println!("FTDX3000 on USB {} (serial {})", r.usb_path, r.serial_number.as_deref().unwrap_or("?"));
-        println!("  CAT (Enhanced) port : {}  [{}]", r.cat.dev, r.cat.stable_path());
+        println!("{} on USB {} ({}, serial {})", r.title(), r.usb_path, r.bridge, r.serial_number.as_deref().unwrap_or("?"));
+        println!("  CAT port            : {}  [{}]", r.cat.dev, r.cat.stable_path());
         for u in &r.cat.users {
             println!("      in use by {} (pid {})", u.name, u.pid);
         }

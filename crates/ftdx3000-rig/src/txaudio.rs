@@ -1,8 +1,9 @@
 //! Transmit audio from the computer's microphone (the "computer mic" switch).
 //!
 //! The radio takes phone audio from its front MIC jack or from its USB codec,
-//! chosen per mode by the MIC SEL menus. Switching to the computer mic sets
-//! those to USB and plays the microphone into the codec while the operator
+//! chosen per mode by the MIC SEL menus (the model's `roles.mic_sel`: on the
+//! FTDX3000 053, 085 and 103). Switching to the computer mic sets those to
+//! USB and plays the microphone into the codec while the operator
 //! transmits; switching back restores what the menus were.
 
 use std::sync::Arc;
@@ -17,11 +18,6 @@ use serde::{Deserialize, Serialize};
 use crate::audio::{self, AudioDevice, Capture, Playback};
 use crate::engine::{Rig, Source};
 
-/// AM, FM and SSB MIC SEL menu items.
-pub const MIC_SEL_MENUS: [u16; 3] = [53, 85, 103];
-/// MIC SEL codes: FRONT (the radio's mic jack), DATA (rear jack), USB.
-pub const MIC_SEL_FRONT: i32 = 0;
-pub const MIC_SEL_USB: i32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -33,11 +29,14 @@ pub struct TxAudioConfig {
     /// MIC SEL values from before switching to the computer mic, restored
     /// when switching back: `(menu, code)`.
     pub saved_mic_sel: Vec<(u16, i32)>,
+    /// The radio model those are for (empty: an FTDX3000, from before other
+    /// radios were supported).
+    pub saved_for: String,
 }
 
 impl Default for TxAudioConfig {
     fn default() -> Self {
-        Self { computer_mic: false, mic: AudioDevice::Default, mic_gain: 1.0, saved_mic_sel: Vec::new() }
+        Self { computer_mic: false, mic: AudioDevice::Default, mic_gain: 1.0, saved_mic_sel: Vec::new(), saved_for: String::new() }
     }
 }
 
@@ -64,19 +63,34 @@ pub fn mic_tx_allowed(rig: &Rig, at_station: bool) -> bool {
     }
 }
 
-/// The current MIC SEL code of `menu`, from the engine's cache.
-pub fn mic_sel(rig: &Rig, menu: u16) -> Option<i32> {
+/// The current code of menu item `menu`, from the engine's cache.
+pub fn menu_code(rig: &Rig, menu: u16) -> Option<i32> {
     let ans = rig.cached(&format!("EX{menu:03}"))?;
-    let item = ftdx3000_cat::menu::item(menu)?;
+    let item = rig.model().menu_item(menu)?;
     match item.decode(ans.get(5..)?.trim_end_matches(';'))? {
         ftdx3000_cat::menu::Value::Int(v) => Some(v),
         _ => None,
     }
 }
 
+/// The current MIC SEL code of `menu`, from the engine's cache.
+pub fn mic_sel(rig: &Rig, menu: u16) -> Option<i32> {
+    menu_code(rig, menu)
+}
+
+/// The Set command for menu item `menu` = `code`, as wide as the radio
+/// last answered it.
+pub fn menu_cmd(rig: &Rig, menu: u16, code: i32) -> String {
+    let width = rig.cached(&format!("EX{menu:03}")).map(|a| a.len().saturating_sub(6));
+    match rig.model().menu_item(menu) {
+        Some(item) => item.set_cmd(&ftdx3000_cat::menu::Value::Int(code), width.filter(|w| *w > 0)),
+        None => format!("EX{menu:03}{code};"),
+    }
+}
+
 /// The Set command for MIC SEL `menu`.
-pub fn mic_sel_cmd(menu: u16, code: i32) -> String {
-    format!("EX{menu:03}{code};")
+pub fn mic_sel_cmd(rig: &Rig, menu: u16, code: i32) -> String {
+    menu_cmd(rig, menu, code)
 }
 
 #[derive(Debug, Clone, Default)]

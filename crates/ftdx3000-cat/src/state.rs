@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::command::answer_key;
 use crate::frame;
+use crate::model::RadioModel;
 use crate::types::{Meter, Mode, WidthClass};
 
 /// The information block shared by `IF`, `OI` and `MR` answers (and `MW` sets).
@@ -27,23 +28,32 @@ pub struct ChannelInfo {
 }
 
 impl ChannelInfo {
-    /// Parse the 24 parameter characters of an `IF`/`OI`/`MR` answer.
+    /// Parse the 24 parameter characters of an `IF`/`OI`/`MR` answer (25 or
+    /// 26 when the frequency has nine or ten digits).
     pub fn parse(p: &str) -> Option<ChannelInfo> {
         if p.len() < 24 || !p.is_ascii() {
             return None;
         }
-        let clar_sign = if &p[11..12] == "-" { -1 } else { 1 };
+        // The clarifier sign follows the frequency (8 digits, 9 above
+        // 99.999999 MHz, 10 above 999.999999 MHz).
+        let Some(f) = (8..=10).find(|f| matches!(p.get(3 + f..4 + f), Some("+" | "-"))) else { return None };
+        if p.len() < 16 + f {
+            return None;
+        }
+        let p = &p[..];
+        let o = f - 8;
+        let clar_sign = if &p[11 + o..12 + o] == "-" { -1 } else { 1 };
         Some(ChannelInfo {
             channel: p[0..3].parse().ok()?,
-            freq: p[3..11].parse().ok()?,
-            clar_offset: clar_sign * p[12..16].parse::<i32>().ok()?,
-            rx_clar: &p[16..17] == "1",
-            tx_clar: &p[17..18] == "1",
-            mode: Mode::from_code(p[18..19].chars().next()?),
-            mem_mode: p[19..20].parse().unwrap_or(0),
-            ctcss: p[20..21].parse().unwrap_or(0),
-            tone: p[21..23].parse().unwrap_or(0),
-            shift: p[23..24].parse().unwrap_or(0),
+            freq: p[3..3 + f].parse().ok()?,
+            clar_offset: clar_sign * p[12 + o..16 + o].parse::<i32>().ok()?,
+            rx_clar: &p[16 + o..17 + o] == "1",
+            tx_clar: &p[17 + o..18 + o] == "1",
+            mode: Mode::from_code(p[18 + o..19 + o].chars().next()?),
+            mem_mode: p[19 + o..20 + o].parse().unwrap_or(0),
+            ctcss: p[20 + o..21 + o].parse().unwrap_or(0),
+            tone: p[21 + o..23 + o].parse().unwrap_or(0),
+            shift: p[23 + o..24 + o].parse().unwrap_or(0),
         })
     }
 
@@ -84,6 +94,8 @@ impl ChannelInfo {
 
 #[derive(Debug, Clone, Default)]
 pub struct RadioState {
+    /// The radio this is (FTDX3000 until another is known).
+    pub model: &'static RadioModel,
     /// Answer keys seen at least once (e.g. "FA", "AG0", "EX038").
     pub seen: BTreeSet<String>,
 
@@ -221,6 +233,48 @@ impl RadioState {
         Self { roofing: '0', ..Default::default() }
     }
 
+    pub fn for_model(model: &'static RadioModel) -> Self {
+        Self { model, ..Self::new() }
+    }
+
+    /// The raw value of menu item `num`.
+    pub fn menu_raw(&self, num: u16) -> Option<&str> {
+        self.menu.get(&num).map(String::as_str)
+    }
+
+    /// Is a CW signal heard on the upper side of the carrier (like USB)?
+    /// CW BFO: USB, LSB or AUTO (LSB below 10 MHz); CW-R flips it.
+    pub fn cw_upper(&self, mode: Mode, dial: u64) -> bool {
+        let normal = match self.model.roles.cw_bfo {
+            Some((item, [_, lsb, auto])) => match self.menu_raw(item) {
+                Some(v) if v == lsb => false,
+                Some(v) if v == auto => dial >= 10_000_000,
+                _ => true,
+            },
+            None => true,
+        };
+        if mode == Mode::CwR { !normal } else { normal }
+    }
+
+    /// The dial shows the frequency of a CW signal heard at the pitch (CW
+    /// FREQ DISPLAY = PITCH OFFSET), not the carrier.
+    pub fn cw_dial_is_pitch_offset(&self) -> bool {
+        self.model.roles.cw_pitch_display.is_some_and(|(item, v)| self.menu_raw(item) == Some(v))
+    }
+
+    /// DATA MODE = OTHER: DATA uses the SSB widths and the display offset.
+    pub fn data_is_other(&self) -> bool {
+        self.model.roles.data_other.is_some_and(|(item, v)| self.menu_raw(item) == Some(v))
+    }
+
+    /// How far the dial is shifted in DATA (OTHER DISP), in Hz.
+    pub fn data_display_offset(&self) -> f32 {
+        if !self.data_is_other() {
+            return 0.0;
+        }
+        self.model.roles.data_disp.and_then(|i| self.menu_raw(i)).and_then(|v| v.trim_start_matches('+').parse().ok()).unwrap_or(0.0)
+    }
+
     pub fn has(&self, key: &str) -> bool {
         self.seen.contains(key)
     }
@@ -261,13 +315,20 @@ impl RadioState {
         if self.tx_vfo == 1 { self.freq_b } else { self.freq_a }
     }
 
-    /// Which Table 5 column applies to `mode`. DATA modes use the RTTY/PSK
-    /// widths when menu 067 DATA MODE is PSK (the default) and the SSB widths
-    /// when it is OTHER.
+    /// Which width table applies to `mode`. On the FTDX3000 DATA modes use
+    /// the RTTY/PSK widths when menu 067 DATA MODE is PSK (the default) and
+    /// the SSB widths when it is OTHER; radios without that menu use the
+    /// SSB widths.
     pub fn width_class(&self, mode: Mode) -> WidthClass {
         match mode {
             Mode::DataLsb | Mode::DataUsb => {
-                if self.menu.get(&67).map(String::as_str) == Some("1") { WidthClass::Ssb } else { WidthClass::Rtty }
+                if self.model.roles.data_psk {
+                    WidthClass::Rtty
+                } else if self.model.roles.data_other.is_none() || self.data_is_other() {
+                    WidthClass::Ssb
+                } else {
+                    WidthClass::Rtty
+                }
             }
             m => m.width_class(),
         }
@@ -275,7 +336,7 @@ impl RadioState {
 
     /// Bandwidth in Hz from width index, narrow flag and mode.
     pub fn width_hz(&self) -> Option<u32> {
-        crate::types::width_hz(self.width_class(self.mode_a?), self.narrow, self.width_index)
+        self.model.width_hz(self.width_class(self.mode_a?), self.narrow, self.width_index)
     }
 
     /// Apply one frame from the radio. Returns false if it was not understood.
@@ -456,10 +517,24 @@ mod tests {
     }
 
     #[test]
+    fn long_frequencies_in_channel_info() {
+        for hz in [144_174_000u64, 1_296_200_000] {
+            let info = ChannelInfo { channel: 1, freq: hz, mode: Some(Mode::Usb), ..Default::default() };
+            let a = info.to_answer("IF");
+            assert_eq!(ChannelInfo::parse(&a[2..a.len() - 1]).map(|i| i.freq), Some(hz), "{a}");
+        }
+    }
+
+    #[test]
     fn channel_info_round_trip() {
         let info = ChannelInfo::parse(&IF_FRAME[2..IF_FRAME.len() - 1]).unwrap();
         assert_eq!(info.to_answer("IF"), IF_FRAME);
         assert_eq!(info.to_mw(5), "MW00514074000+012010200000;");
+        // 9 and 10 frequency digits (IC-705 2 m, IC-9700 23 cm).
+        for f in ["IF001145500000+000000410000;", "IF0011296100000-001010400000;"] {
+            let info = ChannelInfo::parse(&f[2..f.len() - 1]).unwrap();
+            assert_eq!(info.to_answer("IF"), f);
+        }
     }
 
     #[test]

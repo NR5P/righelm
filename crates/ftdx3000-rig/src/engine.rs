@@ -21,7 +21,8 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use ftdx3000_cat::command::{self, Request};
-use ftdx3000_cat::{Framer, RadioState};
+use ftdx3000_cat::model::{self, FTDX3000};
+use ftdx3000_cat::{Framer, RadioModel, RadioState};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +32,9 @@ use crate::transport::{self, Link, SerialSettings};
 #[serde(default)]
 pub struct EngineConfig {
     pub serial: SerialSettings,
+    /// The radio model (`ftdx3000`, `ic7300`, ...); empty = find out from
+    /// the radio when connecting.
+    pub model: String,
     /// Control a radio owned by another instance on the network instead of
     /// a local serial port.
     pub remote: Option<crate::remote::RemoteTarget>,
@@ -42,10 +46,11 @@ pub struct EngineConfig {
     /// Interval between reads of the slower-changing state items.
     pub misc_poll_ms: u64,
     pub read_timeout_ms: u64,
-    /// Read all 196 menu items after connecting.
+    /// Read every menu item after connecting.
     pub read_menu_on_connect: bool,
-    /// Set CAT TIME OUT TIMER (menu 039) to 100 ms after connecting, like
-    /// Hamlib does; the 10 ms default drops commands under load.
+    /// Set CAT TIME OUT TIMER (FTDX3000 menu 039, and the same on other
+    /// Yaesus) to 100 ms after connecting, like Hamlib does; the 10 ms
+    /// default drops commands under load.
     pub set_cat_tot: bool,
 }
 
@@ -53,6 +58,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             serial: SerialSettings::default(),
+            model: String::new(),
             remote: None,
             auto_info: true,
             meter_poll_ms: 150,
@@ -62,6 +68,13 @@ impl Default for EngineConfig {
             read_menu_on_connect: true,
             set_cat_tot: true,
         }
+    }
+}
+
+impl EngineConfig {
+    /// The model chosen in the settings, if any (and known).
+    pub fn wanted_model(&self) -> Option<&'static RadioModel> {
+        if self.model.is_empty() { None } else { model::by_key(&self.model) }
     }
 }
 
@@ -88,7 +101,7 @@ pub enum CatError {
     Rejected,
     Timeout,
     NotConnected,
-    /// Not a valid FTDX3000 command.
+    /// Not a valid command.
     Invalid,
 }
 
@@ -98,7 +111,7 @@ impl std::fmt::Display for CatError {
             CatError::Rejected => "radio rejected the command (?;)",
             CatError::Timeout => "radio did not answer",
             CatError::NotConnected => "radio not connected",
-            CatError::Invalid => "not an FTDX3000 command",
+            CatError::Invalid => "not a CAT command RigHelm knows",
         })
     }
 }
@@ -339,6 +352,11 @@ impl Rig {
         self.shared.state.read()
     }
 
+    /// The radio connected (or last connected; FTDX3000 before any).
+    pub fn model(&self) -> &'static RadioModel {
+        self.shared.state.read().model
+    }
+
     /// Who keyed the radio by CAT (`TX1;`/`MX1;`), if it is CAT-keyed.
     /// `None` while transmitting means the radio's own PTT, key or VOX.
     pub fn tx_source(&self) -> Option<Source> {
@@ -407,7 +425,7 @@ impl Rig {
 
     /// Re-read every menu item.
     pub fn refresh_menu(&self) {
-        let cmds = (1..=196).map(ftdx3000_cat::menu::read_cmd).collect();
+        let cmds = self.model().menu.iter().map(|m| ftdx3000_cat::menu::read_cmd(m.num)).collect();
         self.job(Job::Refresh(cmds));
     }
 
@@ -618,7 +636,14 @@ impl Engine {
                 self.close("reconnecting");
                 self.config = config;
                 self.want_connected = false; // can't reopen an in-process link
-                self.attach(link);
+                // A link to another radio's own protocol (its simulator)
+                // gets that radio's translator.
+                let model = self.config.wanted_model().unwrap_or(&FTDX3000);
+                let link = match ftdx3000_cat::dialect::for_model(model) {
+                    Some(d) => transport::translated(link, d),
+                    None => link,
+                };
+                self.attach(link, model);
             }
             Msg::Job(Job::Disconnect) => {
                 self.want_connected = false;
@@ -715,7 +740,8 @@ impl Engine {
         if let Some(target) = self.config.remote.clone() {
             self.shared.set_link(LinkState::Connecting(format!("connecting to {}", target.addr)));
             match crate::remote::connect_cat(&target) {
-                Ok(link) => self.attach(link),
+                // The remote station translates for its radio already.
+                Ok((link, model)) => self.attach(link, model),
                 Err(e) => {
                     let msg = format!("remote {}: {e}", target.addr);
                     self.shared.info(format!("connect failed: {msg}"));
@@ -735,16 +761,40 @@ impl Engine {
         }
         self.shared.set_link(LinkState::Connecting(format!("probing {}", s.path)));
         let shared = self.shared.clone();
-        let probe = transport::probe(&s, |baud, flow| {
+        let want = self.config.wanted_model();
+        if !self.config.model.is_empty() && want.is_none() {
+            self.shared.info(format!("unknown radio model \"{}\" in the settings; finding out from the radio", self.config.model));
+        }
+        let probe = transport::probe(&s, want, |baud, flow| {
             shared.info(format!("probing {} at {baud} bps ({flow:?} handshake)", s.path));
         });
         match probe {
             Ok((found, link)) => {
                 self.shared.info(format!("radio answered {} at {} bps", found.id_answer, found.baud));
-                if !found.id_answer.starts_with("ID0462") {
-                    self.shared.info(format!("warning: {} is not an FTDX3000 (ID0462;)", found.id_answer));
-                }
-                self.attach(link);
+                let model = match found.model {
+                    Some(m) => {
+                        if want.is_some_and(|w| w != m) {
+                            self.shared.info(format!("the radio is a {}, not the {} chosen in the settings", m.full_name(), want.unwrap().full_name()));
+                        }
+                        m
+                    }
+                    None if found.civ_addr.is_some() => {
+                        let msg = format!("an Icom radio RigHelm doesn't know answered ({}); choose the model in Settings", found.id_answer);
+                        self.shared.info(msg.clone());
+                        self.shared.set_link(LinkState::Error(msg));
+                        return;
+                    }
+                    None => {
+                        self.shared.info(format!("warning: {} is not a radio RigHelm knows; treating it as an FTDX3000", found.id_answer));
+                        &FTDX3000
+                    }
+                };
+                self.shared.info(format!("radio: {}", model.full_name()));
+                let link = match ftdx3000_cat::dialect::for_model(model) {
+                    Some(d) => transport::translated(link, d),
+                    None => link,
+                };
+                self.attach(link, model);
             }
             Err(e) => {
                 let mut msg = e.to_string();
@@ -760,7 +810,13 @@ impl Engine {
         }
     }
 
-    fn attach(&mut self, link: Link) {
+    fn attach(&mut self, link: Link, model: &'static RadioModel) {
+        // A different radio: forget everything about the last one.
+        if self.shared.state.read().model != model {
+            *self.shared.state.write() = RadioState::for_model(model);
+            self.shared.cache.lock().clear();
+            self.shared.bump();
+        }
         // Nothing from before this connection may be sent on it.
         self.sets.clear();
         self.reads.clear();
@@ -811,8 +867,13 @@ impl Engine {
     fn setup_polls(&mut self) {
         let now = Instant::now();
         let c = &self.config;
+        let model = self.shared.state.read().model;
+        let has = |cmd: &str| model.has(&cmd[..2]);
         let mut polls = Vec::new();
         let mut add = |cmd: &str, every: u64, offset: u64| {
+            if !has(cmd) {
+                return;
+            }
             let cmd = cmd.to_string();
             let key = match command::classify(&cmd) {
                 Request::Read { key } => key,
@@ -829,9 +890,10 @@ impl Engine {
         for v in VFO_POLL {
             add(v, vfo, 0);
         }
-        let misc_cycle = c.misc_poll_ms * MISC_POLL.len() as u64;
+        let misc: Vec<&&str> = MISC_POLL.iter().filter(|m| has(m)).collect();
+        let misc_cycle = c.misc_poll_ms * misc.len() as u64;
         let misc_every = if c.auto_info { misc_cycle.max(15_000) } else { misc_cycle.max(5_000) };
-        for (i, m) in MISC_POLL.iter().enumerate() {
+        for (i, m) in misc.iter().enumerate() {
             add(m, misc_every, 200 + i as u64 * c.misc_poll_ms);
         }
         self.polls = polls;
@@ -839,21 +901,30 @@ impl Engine {
         // Start-up sequence: identify, configure, then read everything once.
         self.once.clear();
         self.once.push_back("ID;".into());
-        self.once.push_back("PS;".into());
-        if self.config.set_cat_tot {
-            self.sets.push_back(("EX0391;".into(), Source::Engine));
+        if has("PS;") {
+            self.once.push_back("PS;".into());
         }
-        let ai = if self.config.auto_info { "AI1;" } else { "AI0;" };
-        self.sets.push_back((ai.into(), Source::Engine));
-        for v in VFO_POLL.iter().chain(MISC_POLL) {
+        if self.config.set_cat_tot {
+            if let Some((item, v)) = model.roles.cat_tot {
+                self.sets.push_back((format!("EX{item:03}{v};"), Source::Engine));
+            }
+        }
+        if has("AI;") {
+            let ai = if self.config.auto_info { "AI1;" } else { "AI0;" };
+            self.sets.push_back((ai.into(), Source::Engine));
+        }
+        for v in VFO_POLL.iter().chain(MISC_POLL).filter(|v| has(v)) {
             self.once.push_back(v.to_string());
         }
-        for k in 1..=5 {
-            self.once.push_back(format!("KM{k};"));
+        if has("KM;") {
+            // RigHelm's KM has room for five (the FTDX3000's).
+            for k in 1..=model.caps.keyer_memories.min(5) {
+                self.once.push_back(format!("KM{k};"));
+            }
         }
         if self.config.read_menu_on_connect {
-            for n in 1..=196 {
-                self.once.push_back(ftdx3000_cat::menu::read_cmd(n));
+            for m in model.menu {
+                self.once.push_back(ftdx3000_cat::menu::read_cmd(m.num));
             }
         }
     }

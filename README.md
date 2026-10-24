@@ -9,10 +9,14 @@ the radio is plugged into, or as a remote control for another RigHelm on your ne
 It owns the radio's CAT
 port and shares it with any number of other programs, on this computer or across your LAN.
 
+Besides the FTDX3000 it controls 31 other Yaesu, Icom, Kenwood and Elecraft radios (see
+[Supported radios](#supported-radios)), with their own menus, bands, modes and controls.
+
 - **Full radio control.** VFO A/B, split, bands, modes, filters and DSP, receiver and
   transmitter settings, clarifier, CW keyer and keyer memories, voice memories, tuner,
-  antennas, rotator, live meters, all 196 menu items (with backup and restore), memory
-  channels, macros, and a raw CAT console.
+  antennas, rotator, live meters, the radio's whole menu (196 items on the FTDX3000, with
+  backup and restore), memory channels, macros, and a raw CAT console. On other radios the
+  controls it doesn't have are hidden.
 - **Audio waterfall.** A scrolling spectrogram of the radio's receive audio (up to 6 kHz),
   with the filter passband and CW pitch overlaid. Hover shows a signal's radio frequency;
   in CW, click a trace to zero-beat it. It shares the radio's sound card with WSJT-X, and
@@ -21,9 +25,10 @@ port and shares it with any number of other programs, on this computer or across
   wide spectrum and waterfall of the band (up to 1.6 MHz) appears by itself, follows the
   VFO, and tunes the radio with a click. Nothing else to install, and remote computers
   see it too (see below).
-- **Auto-detect.** Finds the radio's CP2105 USB bridge (Enhanced = CAT, Standard = keying)
-  and the radio's own USB audio codec. The two are paired because they sit on the same
-  internal USB hub of the radio. The baud rate and handshake are probed on connect.
+- **Auto-detect.** Finds the radio's USB bridge (Yaesu's CP2105: Enhanced = CAT, Standard =
+  keying; Icom's and Kenwood's CP2102; the IC-705's own ports; FTDI for Elecraft) and the
+  radio's own USB audio codec. The two are paired because they sit on the same internal USB
+  hub of the radio. On connect the baud rate, handshake and the radio model are probed.
 - **Port sharing.** Linux has the same one-program-per-port problem as Windows, so this
   program opens the radio exclusively and offers **virtual serial ports** and a
   **rigctld-compatible server** to everything else.
@@ -35,6 +40,39 @@ port and shares it with any number of other programs, on this computer or across
 - **CW from the computer.** A RADIO KEY / COMPUTER KEY switch: key the radio from the
   touchpad, mouse or keyboard (straight key or iambic paddles) or send typed text.
 - **Space bar push-to-talk.** Hold the space bar to transmit, let go to stop.
+
+## Supported radios
+
+| Maker | Radios |
+|-------|--------|
+| Yaesu | FTDX3000, FTDX101D, FTDX101MP, FTDX10, FT-710, FT-991A, FT-991, FT-891, FTDX5000, FTDX1200 (and with FFT-1), FT-950, FT-2000, FT-2000D, FT-450D, FT-450 |
+| Icom | IC-7300, IC-7300MK2, IC-7610, IC-705, IC-9700 |
+| Kenwood | TS-590S, TS-590SG, TS-890S, TS-990S, TS-2000, TS-480SAT, TS-480HX |
+| Elecraft | K3 / K3S, KX3, KX2, K4 |
+
+RigHelm finds out which radio it is when it connects (Settings → *Ports & sharing* → *Radio*
+can also name it, for the few that answer alike: the TS-480SAT/HX, FT-2000/2000D). Each
+model's menus, bands, modes, filter widths, preamp, attenuator and power range come from the
+manufacturer's CAT/CI-V reference manual.
+
+How it works: inside RigHelm everything speaks the FTDX3000's CAT language, whatever the
+radio. For any other radio a translator on the serial line turns that into the radio's own
+commands (Yaesu and Kenwood text commands, Icom's binary CI-V) and the radio's answers back.
+The FTDX3000 itself goes through no translator at all. The virtual ports run the same
+translator the other way round, so programs see the real radio.
+
+Only the FTDX3000 has been used with the real radio. The others are checked against
+simulators (see [Testing without the radio](#testing-without-the-radio)) and against
+Hamlib's own drivers for them, but not yet on the air: meter scales in particular are
+estimates for most of them. Reports from owners are welcome.
+
+Radio settings for the other makes:
+
+- **Icom**: CI-V USB port *Unlink from [REMOTE]*, *CI-V Transceive* ON, *CI-V USB Echo Back*
+  OFF. RigHelm opens the port with RTS and DTR off, so *USB SEND* / *USB Keying* set to RTS or
+  DTR can't key the radio.
+- **Kenwood**: the PC port's speed as you like (it's probed); RTS/CTS handshake.
+- **Elecraft**: RigHelm turns on the extended (K31) command mode itself.
 
 ## Build and install
 
@@ -203,13 +241,16 @@ it, and then they steal each other's answers. Most programs also lock it exclusi
 
 ### 1. Virtual serial ports
 
-Each one behaves exactly like an FTDX3000 on a serial cable (default `vcom1..3` in
-`$XDG_RUNTIME_DIR/ftdx3000/`, e.g. `/run/user/1000/ftdx3000/vcom1`).
+Each one behaves exactly like the radio on a serial cable (default `vcom1..3` in
+`$XDG_RUNTIME_DIR/ftdx3000/`, e.g. `/run/user/1000/ftdx3000/vcom1`): the connected radio
+itself, so you choose your radio in other programs. A port can also be set to show an
+FTDX3000 whatever the radio (*Programs see* in *Ports & sharing*), for programs already set up
+for one.
 
-- **WSJT-X / JTDX**: Rig *Yaesu FTDX-3000*, Serial port `/run/user/1000/ftdx3000/vcom1`
-  (type it in), Handshake *None*, PTT *CAT*.
-- **fldigi**: Hamlib, FTDX-3000, device as above.
-- **flrig**: FTdx3000, port as above.
+- **WSJT-X / JTDX**: Rig = your radio (e.g. *Yaesu FTDX-3000*, *Icom IC-7300*), Serial port
+  `/run/user/1000/ftdx3000/vcom1` (type it in), Handshake *None*, PTT *CAT*.
+- **fldigi**: Hamlib, your radio, device as above.
+- **flrig**: your radio, port as above.
 - **Wine programs** (N1MM, Log4OM, CW Skimmer...): *Ports & sharing → Wine COM port
   mapping* links `COMn` in a Wine prefix to a virtual port.
 
@@ -227,7 +268,7 @@ How the sharing works:
 ### 2. rigctld-compatible server
 
 On `127.0.0.1:4532`. Anything with Hamlib can use rig **Hamlib NET rigctl** with no serial
-port at all. Tested against Hamlib 4.6's own `rigctl -m 2`.
+port at all, for every supported radio. Tested against Hamlib 4.6's own `rigctl -m 2`.
 
 ## Remote operation over the LAN
 
@@ -355,14 +396,40 @@ cargo run --release --bin righelm-sim
 
 Then choose `/run/user/1000/ftdx3000/sim` as the CAT port. The simulator answers every
 command in the CAT reference, supports auto-information, and rejects bad commands with
-`?;`.
+`?;`. It can be any other supported radio too, speaking that radio's own protocol (so any
+program, or Hamlib, can be pointed at it as at the real one):
+
+```bash
+cargo run --release --bin righelm-sim -- --model ic7300
+```
+
+`--list` shows the models.
 
 ```bash
 cargo test
 ```
 
 Runs the protocol, engine, virtual port (with real PTYs), rigctld, remote control/audio and
-CW keyer tests.
+CW keyer tests, and for every supported radio:
+
+- the radio through the real engine and its translator against its simulator: every command
+  the model says it has, every band and mode, reading and writing every menu item;
+- Hamlib's own driver for the radio (`rigctl -m <model>`) against the simulator, and through
+  a RigHelm virtual port (skipped if Hamlib isn't installed). Hamlib's drivers were written
+  by people with the radios, so this is a check independent of RigHelm's own reading of the
+  manuals;
+- connecting to the simulator recognises the right model.
+
+`RIGHELM_MODELS=ic7300,ft991a cargo test` checks just those radios.
+
+A check against the real radio that never transmits: it detects the radio, runs RigHelm's
+start-up, reads the whole menu and everything the screens use, writes back values the radio
+already has, and reads it through the rigctld server. Every transmit command is dropped
+before it reaches the radio. Close RigHelm first, because it needs the CAT port:
+
+```bash
+cargo run --release --example radio_check
+```
 
 With the radio connected to a dummy load, two hardware checks key it briefly at 5 W. Close
 RigHelm first, because they need the CAT port:
@@ -390,12 +457,18 @@ RIGHELM_SCOPE_SIM=1 cargo run --release --bin righelm
 ## Files
 
 - Config: `~/.config/ftdx3000/config.toml` (override with `FTDX3000_CONFIG`).
-- Menu backups default to `~/ftdx3000-menu-backup.txt`. Restore skips the CAT settings
-  (037-040) unless you tick the box.
+- Menu backups default to `~/<radio>-menu-backup.txt` (`~/ftdx3000-menu-backup.txt` for the
+  FTDX3000) and remember which radio they are from. Restore skips the CAT settings (037-040
+  on the FTDX3000) unless you tick the box.
 
 ## Notes and limits
 
-- Meter calibrations (SWR, ID, VDD) are approximate until checked against the radio.
+- Meter calibrations (SWR, ID, VDD) are approximate until checked against the radio; on the
+  radios other than the FTDX3000 all meter scales are estimates.
+- The CAT console and macros use RigHelm's language (FTDX3000 commands) whatever the radio.
+- The computer CW key keys the radio on RTS of its second USB serial port (the Standard COM
+  port of Yaesu's CP2105). Radios with a single CAT port (most Icom and Kenwood radios) can't
+  be keyed that way yet; their own keyer and keyer memories still work.
 - The FTDX3000 does not send its band scope over CAT; the band scope needs an RTL-SDR
   dongle on IF OUT or RX OUT.
 - DATA-mode filter widths follow menu 067: PSK widths when DATA MODE = PSK, SSB widths

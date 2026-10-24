@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use crossbeam_channel::Receiver;
 use eframe::egui::{self, Align2, Color32, ColorImage, FontId, Pos2, Rect, RichText, Sense, Shape, Stroke, TextureHandle, TextureOptions, Ui, vec2};
-use ftdx3000_cat::types::{FREQ_MAX, FREQ_MIN, Mode, WidthClass};
+use ftdx3000_cat::types::{Mode, WidthClass};
 use ftdx3000_cat::{RadioState, set_freq_cmd};
 use ftdx3000_rig::spectrum::Spectrum;
 use ftdx3000_rig::{Rig, UiPrefs};
@@ -59,14 +59,10 @@ pub(crate) fn palette() -> Vec<Color32> {
 }
 
 /// Is a CW signal heard on the upper side of the carrier (like USB)?
-/// Menu 060 CW BFO: 0 USB, 1 LSB, 2 AUTO (LSB below 10 MHz). CW-R flips it.
+/// The radio's CW BFO menu (FTDX3000 060: USB, LSB, AUTO = LSB below 10
+/// MHz); CW-R flips it.
 pub(crate) fn cw_upper(s: &RadioState, mode: Mode, dial: u64) -> bool {
-    let normal = match s.menu.get(&60).map(String::as_str) {
-        Some("1") => false,
-        Some("2") => dial >= 10_000_000,
-        _ => true,
-    };
-    if mode == Mode::CwR { !normal } else { normal }
+    s.cw_upper(mode, dial)
 }
 
 pub(crate) fn pitch(s: &RadioState) -> f32 {
@@ -84,18 +80,15 @@ pub(crate) fn rf_of_audio(s: &RadioState, af: f32) -> Option<f64> {
     let (dial, mode) = rx_vfo(s)?;
     let (upper, offset) = match mode {
         Mode::Cw | Mode::CwR => {
-            // Menu 064 CW FREQ DISPLAY = PITCH OFFSET: the dial shows the
-            // frequency of a signal heard at the pitch.
-            let off = if s.menu.get(&64).map(String::as_str) == Some("1") { af - pitch(s) } else { af };
+            // CW FREQ DISPLAY = PITCH OFFSET (FTDX3000 menu 064): the dial
+            // shows the frequency of a signal heard at the pitch.
+            let off = if s.cw_dial_is_pitch_offset() { af - pitch(s) } else { af };
             (cw_upper(s, mode, dial), off)
         }
         Mode::DataUsb | Mode::DataLsb => {
-            // DATA MODE = OTHER shifts the display by menu 069 (e.g. +1500).
-            let disp = if s.menu.get(&67).map(String::as_str) == Some("1") {
-                s.menu.get(&69).and_then(|v| v.trim_start_matches('+').parse::<f32>().ok()).unwrap_or(0.0)
-            } else {
-                0.0
-            };
+            // DATA MODE = OTHER shifts the display by OTHER DISP (FTDX3000
+            // menus 067 and 069, e.g. +1500).
+            let disp = s.data_display_offset();
             (mode == Mode::DataUsb, af - disp)
         }
         Mode::Usb | Mode::RttyUsb => (true, af),
@@ -352,7 +345,7 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
         let ticks = widgets::wheel_ticks(ui, &resp);
         if ticks != 0 {
             if let Some((dial, _)) = rx_vfo(s) {
-                let hz = (dial as i64 + ticks * tune_step).clamp(FREQ_MIN as i64, FREQ_MAX as i64) as u64;
+                let hz = s.model.clamp_freq((dial as i64 + ticks * tune_step).max(0) as u64);
                 rig.send(set_freq_cmd(s.rx_on_b(), hz));
             }
         }

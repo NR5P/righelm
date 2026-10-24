@@ -1,7 +1,11 @@
-//! Run the built-in FTDX3000 simulator on a PTY, so any program (including
-//! this project's own app) can be tested without a radio.
+//! Run the built-in simulator on a PTY, so any program (including this
+//! project's own app, or Hamlib) can be tested without a radio.
 //!
-//!     righelm-sim [LINK_PATH]     (default: $XDG_RUNTIME_DIR/ftdx3000/sim)
+//!     righelm-sim [--model KEY] [LINK_PATH]   (default: $XDG_RUNTIME_DIR/ftdx3000/sim)
+//!     righelm-sim --list                      (the models it can be)
+//!
+//! An FTDX3000 by default; with `--model` (e.g. `ic7300`, `ft991a`) that
+//! radio, speaking its own protocol.
 
 #[cfg(not(unix))]
 fn main() {
@@ -20,20 +24,44 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use ftdx3000_cat::Framer;
+use std::sync::Arc;
+
 use ftdx3000_rig::pty::{Pty, PtyEvent, default_link_dir};
-use ftdx3000_rig::sim::SimCore;
+use ftdx3000_rig::sim::{SimCore, SimLine};
+use parking_lot::Mutex;
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
 pub fn main() -> std::io::Result<()> {
-    let link = std::env::args().nth(1).map(Into::into).unwrap_or_else(|| default_link_dir().join("sim"));
+    let mut args = std::env::args().skip(1);
+    let mut model = &ftdx3000_cat::model::FTDX3000;
+    let mut link = None;
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--list" => {
+                for m in ftdx3000_cat::model::all() {
+                    println!("{:12} {}", m.key, m.full_name());
+                }
+                return Ok(());
+            }
+            "--model" => {
+                let key = args.next().unwrap_or_default();
+                let Some(m) = ftdx3000_cat::model::by_key(&key) else {
+                    eprintln!("unknown model \"{key}\" (righelm-sim --list shows them)");
+                    std::process::exit(2);
+                };
+                model = m;
+            }
+            _ => link = Some(std::path::PathBuf::from(a)),
+        }
+    }
+    let link = link.unwrap_or_else(|| default_link_dir().join("sim"));
     install_signal_handlers();
     let mut pty = Pty::open(Some(&link))?;
-    println!("FTDX3000 simulator on {} -> {}", link.display(), pty.slave_path.display());
+    println!("{} simulator on {} -> {}", model.full_name(), link.display(), pty.slave_path.display());
     println!("Press Ctrl-C to stop.");
-    let mut core = SimCore::new();
-    let mut framer = Framer::new();
+    let core = Arc::new(Mutex::new(SimCore::for_model(model)));
+    let mut line = SimLine::new(core.clone());
     let mut buf = [0u8; 512];
     let mut active = false;
     while !STOP.load(Ordering::Relaxed) {
@@ -41,16 +69,8 @@ pub fn main() -> std::io::Result<()> {
             PtyEvent::Readable => match pty.read(&mut buf) {
                 Ok(n) if n > 0 => {
                     active = true;
-                    let mut out = String::new();
-                    for f in framer.push(&buf[..n]) {
-                        for a in core.handle(&f) {
-                            out.push_str(&a);
-                        }
-                    }
-                    for a in core.outbox.drain(..) {
-                        out.push_str(&a);
-                    }
-                    let _ = pty.master.write_all(out.as_bytes());
+                    let out = line.handle(&buf[..n]);
+                    let _ = pty.master.write_all(&out);
                 }
                 _ => {}
             },
@@ -58,7 +78,7 @@ pub fn main() -> std::io::Result<()> {
                 if active {
                     // Fresh PTY so an exclusive-mode client can't lock us out.
                     active = false;
-                    framer.clear();
+                    line = SimLine::new(core.clone());
                     pty.renew()?;
                 }
                 std::thread::sleep(Duration::from_millis(100));

@@ -1,9 +1,15 @@
-//! A software FTDX3000 for development and tests.
+//! A software FTDX3000 for development and tests — or any other supported
+//! radio.
 //!
 //! It answers every command in the CAT reference with the same frame formats
 //! as the radio, rejects invalid commands with `?;`, supports auto-information
 //! and powering off. It is not a model of the radio's DSP — meters wander
 //! pseudo-randomly.
+//!
+//! As another radio ([`SimRadio::for_model`]) the same core keeps that
+//! radio's menus, bands and modes, and the radio's own translator turns
+//! what is said on the line into that radio's protocol, so a program (or
+//! Hamlib) can be pointed at it as at the real one.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -12,14 +18,16 @@ use std::thread;
 use std::time::Duration;
 
 use ftdx3000_cat::command::{self, Request};
-use ftdx3000_cat::menu::{self, Kind, MENU, Value};
-use ftdx3000_cat::types::{BANDS, FREQ_MAX, FREQ_MIN};
-use ftdx3000_cat::{ChannelInfo, Framer, Mode, frame};
+use ftdx3000_cat::dialect::Emulator;
+use ftdx3000_cat::menu::{self, Kind, Value};
+use ftdx3000_cat::model::FTDX3000;
+use ftdx3000_cat::{ChannelInfo, Framer, Mode, RadioModel, frame};
 use parking_lot::Mutex;
 
 use crate::transport::{Link, pipe};
 
 pub struct SimCore {
+    pub model: &'static RadioModel,
     /// Stored answers for simple "set == answer" commands, by answer key.
     answers: BTreeMap<String, String>,
     pub freq_a: u64,
@@ -48,9 +56,9 @@ pub struct SimCore {
     pub outbox: Vec<String>,
 }
 
-fn default_menu_raw(item: &menu::MenuItem) -> String {
+fn default_menu_raw(model: &RadioModel, item: &menu::MenuItem) -> String {
     let v = match item.kind {
-        Kind::Text { max } => return format!("{:<max$}", "FTDX3000"),
+        Kind::Text { max } => return format!("{:<max$}", model.name.chars().take(max).collect::<String>()),
         Kind::Num { min, max, signed, .. } => {
             if signed { 0 } else { min.max(0).min(max) }
         }
@@ -59,6 +67,7 @@ fn default_menu_raw(item: &menu::MenuItem) -> String {
         _ => 0,
     };
     let v = match item.num {
+        _ if !model.is_ftdx3000() => v,
         38 => 1, // CAT RATE 9600
         39 => 0,
         40 => 1,
@@ -76,6 +85,12 @@ impl Default for SimCore {
 
 impl SimCore {
     pub fn new() -> Self {
+        Self::for_model(&FTDX3000)
+    }
+
+    /// A simulated `model` (in RigHelm's language; see [`SimRadio`] for one
+    /// that speaks the radio's own).
+    pub fn for_model(model: &'static RadioModel) -> Self {
         let mut answers = BTreeMap::new();
         for a in [
             "AG0100;", "BC00;", "BI0;", "BP00000;", "BP01150;", "BY00;", "CN000;", "CO0000;", "CO0110;",
@@ -86,10 +101,19 @@ impl SimCore {
             "SD0200;", "SF1;", "SH000;", "SQ0000;", "TS0;", "UL0;", "VD0300;", "VF001281;", "VG050;", "VS0;",
             "VX0;", "EM11 ;",
         ] {
-            answers.insert(command::answer_key(a).unwrap(), a.to_string());
+            if model.has(&a[..2]) {
+                answers.insert(command::answer_key(a).unwrap(), a.to_string());
+            }
         }
-        for item in MENU {
-            answers.insert(format!("EX{:03}", item.num), format!("EX{:03}{};", item.num, default_menu_raw(item)));
+        // The model's own starting values, where the FTDX3000's don't fit.
+        for a in model.sim {
+            if let Some(k) = command::answer_key(a) {
+                answers.insert(k, a.to_string());
+            }
+        }
+        answers.insert("ID".into(), format!("ID{};", model.id));
+        for item in model.menu {
+            answers.insert(format!("EX{:03}", item.num), format!("EX{:03}{};", item.num, default_menu_raw(model, item)));
         }
         let mut memories = BTreeMap::new();
         memories.insert(
@@ -100,10 +124,16 @@ impl SimCore {
             2,
             ChannelInfo { channel: 2, freq: 14_074_000, mode: Some(Mode::DataUsb), mem_mode: 1, ..Default::default() },
         );
+        // A radio without 20 m (VHF/UHF only) starts on its first band.
+        let (freq_a, freq_b) = match model.bands.iter().find(|b| b.label != "GEN") {
+            Some(b) if !model.in_range(14_074_000) => (b.lo + 100_000, b.lo + 102_000),
+            _ => (14_074_000, 14_076_000),
+        };
         Self {
+            model,
             answers,
-            freq_a: 14_074_000,
-            freq_b: 14_076_000,
+            freq_a,
+            freq_b,
             mode_a: Mode::Usb,
             mode_b: Mode::Usb,
             power_on: true,
@@ -165,6 +195,7 @@ impl SimCore {
     /// Answer a Read command.
     fn read(&mut self, key: &str) -> Option<String> {
         Some(match key {
+            k if !self.model.has(&k[..2]) => return None,
             "AC" => format!("AC00{};", self.tuner),
             "AI" => format!("AI{};", self.ai as u8),
             "AN0" => format!("AN0{}0;", self.antenna),
@@ -215,29 +246,38 @@ impl SimCore {
         })
     }
 
+    /// The model's amateur bands (not GEN).
+    fn bands(&self) -> Vec<&'static ftdx3000_cat::types::Band> {
+        self.model.bands.iter().filter(|b| b.label != "GEN").collect()
+    }
+
     fn set_band(&mut self, idx: usize) {
-        let b = &BANDS[idx.min(BANDS.len() - 2)];
+        let bands = self.bands();
+        let b = bands[idx.min(bands.len() - 1)];
         self.freq_a = b.lo + match b.label {
             "160" => 30_000,
             "80" => 73_000,
+            _ if b.hi - b.lo < 200_000 => (b.hi - b.lo) / 2,
             _ => 74_000,
         };
     }
 
     fn band_index(&self) -> usize {
-        BANDS.iter().position(|b| b.code != 11 && (b.lo..=b.hi).contains(&self.freq_a)).unwrap_or(5)
+        self.bands().iter().position(|b| (b.lo..=b.hi).contains(&self.freq_a)).unwrap_or(0)
     }
 
     /// Apply a Set command. Returns false if the radio would answer `?;`.
     fn set(&mut self, code: &str, p: &str) -> bool {
         let digits = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
         match code {
+            _ if !self.model.has(code) => return false,
             "FA" | "FB" => {
-                if p.len() != 8 || !digits(p) {
+                // 8 digits; 9 or 10 on radios that go that high.
+                if !(p.len() == 8 || p.len() == 9 && self.model.freq_max > 99_999_999 || p.len() == 10 && self.model.freq_max > 999_999_999) || !digits(p) {
                     return false;
                 }
                 let f: u64 = p.parse().unwrap();
-                if !(FREQ_MIN..=FREQ_MAX).contains(&f) {
+                if !self.model.in_range(f) {
                     return false;
                 }
                 if self.transmitting() {
@@ -247,7 +287,7 @@ impl SimCore {
             }
             "MD" => {
                 let Some(m) = p.get(1..2).and_then(|c| Mode::from_code(c.chars().next()?)) else { return false };
-                if p.len() != 2 {
+                if p.len() != 2 || !self.model.modes.contains(&m) {
                     return false;
                 }
                 self.mode_a = m;
@@ -265,25 +305,23 @@ impl SimCore {
                 std::mem::swap(&mut self.mode_a, &mut self.mode_b);
             }
             "BS" => {
-                let Ok(b) = p.parse::<usize>() else { return false };
-                if b > 11 {
-                    return false;
-                }
-                if b < 11 {
-                    self.set_band(b);
+                let Ok(code) = p.parse::<u8>() else { return false };
+                let Some(b) = self.model.bands.iter().find(|b| b.code == code) else { return false };
+                if let Some(i) = self.bands().iter().position(|x| x.code == b.code) {
+                    self.set_band(i);
                 }
             }
             "BU" => {
-                let i = self.band_index();
-                self.set_band((i + 1) % 11);
+                let (i, n) = (self.band_index(), self.bands().len());
+                self.set_band((i + 1) % n);
             }
             "BD" => {
-                let i = self.band_index();
-                self.set_band((i + 10) % 11);
+                let (i, n) = (self.band_index(), self.bands().len());
+                self.set_band((i + n - 1) % n);
             }
             "UP" | "DN" => {
                 let step = 100;
-                self.freq_a = if code == "UP" { self.freq_a + step } else { self.freq_a.saturating_sub(step) }.clamp(FREQ_MIN, FREQ_MAX);
+                self.freq_a = self.model.clamp_freq(if code == "UP" { self.freq_a + step } else { self.freq_a.saturating_sub(step) });
             }
             "TX" => match p {
                 "0" | "1" => {
@@ -305,8 +343,8 @@ impl SimCore {
                 "0" | "1" | "4" | "5" => self.rx_function = p.parse().unwrap(),
                 _ => return false,
             },
-            "AN" => match p {
-                "01" | "02" | "03" => self.antenna = p[1..].parse().unwrap(),
+            "AN" => match p.get(1..2).and_then(|a| a.parse::<u8>().ok()) {
+                Some(a) if p.len() == 2 && (1..=self.model.caps.antennas).contains(&a) => self.antenna = a,
                 _ => return false,
             },
             "AC" => match p {
@@ -314,6 +352,13 @@ impl SimCore {
                 "001" | "002" => self.tuner = 1,
                 _ => return false,
             },
+            "RF" if !self.model.is_ftdx3000() => {
+                let Some(c) = p.get(1..2).and_then(|c| c.chars().next()) else { return false };
+                if p.len() != 2 || !self.model.caps.roofing.iter().any(|(x, _)| *x == c) {
+                    return false;
+                }
+                self.roofing = c;
+            }
             "RF" => {
                 self.roofing = match p {
                     "00" => '6',
@@ -360,7 +405,7 @@ impl SimCore {
             "XT" => self.tx_clar = p == "1",
             "MC" => {
                 let Ok(ch) = p.parse::<u16>() else { return false };
-                if ch > 117 {
+                if !self.model.caps.memory.channels().contains(&ch) {
                     return false;
                 }
                 self.memory_channel = ch;
@@ -396,7 +441,7 @@ impl SimCore {
             "PS" => self.power_on = p == "1",
             "EX" => {
                 let Some(num) = p.get(..3).and_then(|n| n.parse::<u16>().ok()) else { return false };
-                let Some(item) = menu::item(num) else { return false };
+                let Some(item) = self.model.menu_item(num) else { return false };
                 let raw = &p[3..];
                 if item.decode(raw).is_none() {
                     return false;
@@ -405,7 +450,8 @@ impl SimCore {
             }
             "PC" => {
                 let Ok(v) = p.parse::<u32>() else { return false };
-                if p.len() != 3 || !(5..=100).contains(&v) {
+                let (lo, hi) = self.model.caps.power;
+                if p.len() != 3 || !(lo as u32..=hi as u32).contains(&v) {
                     return false;
                 }
                 self.answers.insert("PC".into(), format!("PC{p};"));
@@ -417,9 +463,9 @@ impl SimCore {
                 self.answers.insert(format!("{code}0"), format!("{code}{p};"));
             }
             "KM" => {
-                let Some(ch) = p.get(..1).and_then(|c| c.parse::<u8>().ok()).filter(|c| (1..=5).contains(c)) else { return false };
+                let Some(ch) = p.get(..1).and_then(|c| c.parse::<u8>().ok()).filter(|c| (1..=self.model.caps.keyer_memories).contains(c)) else { return false };
                 let text = p[1..].trim_end_matches('}');
-                if text.len() > 50 {
+                if text.len() > self.model.caps.keyer_memory_len as usize {
                     return false;
                 }
                 self.answers.insert(format!("KM{ch}"), format!("KM{ch}{text}}};"));
@@ -499,9 +545,89 @@ impl Default for SimRadio {
     }
 }
 
+/// One simulated radio's end of the line: RigHelm's language for the
+/// FTDX3000, the radio's own (through its emulator) for the others.
+pub struct SimLine {
+    core: Arc<Mutex<SimCore>>,
+    framer: Framer,
+    emulator: Option<Box<dyn Emulator>>,
+    /// The program turned the radio's auto-information on.
+    ai: bool,
+}
+
+impl SimLine {
+    pub fn new(core: Arc<Mutex<SimCore>>) -> Self {
+        let model = core.lock().model;
+        Self { core, framer: Framer::new(), emulator: ftdx3000_cat::dialect::emulator_for(model), ai: false }
+    }
+
+    /// Bytes from the program in, bytes for it out.
+    pub fn handle(&mut self, bytes: &[u8]) -> Vec<u8> {
+        let mut c = self.core.lock();
+        let Some(em) = self.emulator.as_mut() else {
+            let mut out = String::new();
+            for f in self.framer.push(bytes) {
+                for a in c.handle(&f) {
+                    out.push_str(&a);
+                }
+            }
+            for a in c.outbox.drain(..) {
+                out.push_str(&a);
+            }
+            return out.into_bytes();
+        };
+        let mut out = Vec::new();
+        for f in em.split(bytes) {
+            let req = em.request(&f);
+            if let Some(on) = req.auto_info {
+                self.ai = on;
+                c.handle(if on { "AI1;" } else { "AI0;" });
+            }
+            let mut rejected = false;
+            for set in &req.sets {
+                if c.handle(set).iter().any(|a| a == "?;") {
+                    rejected = true;
+                }
+            }
+            if let Some(now) = &req.immediate {
+                out.extend_from_slice(now);
+            } else if rejected {
+                out.extend_from_slice(&em.respond(&req, &[None]));
+            } else if !req.reads.is_empty() {
+                let answers: Vec<Option<String>> = req.reads.iter().map(|r| c.handle(r).into_iter().next().filter(|a| a != "?;")).collect();
+                out.extend_from_slice(&em.respond(&req, &answers));
+            } else {
+                out.extend_from_slice(&em.respond(&req, &[]));
+            }
+            for set in em.after() {
+                c.handle(&set);
+            }
+        }
+        let pushed: Vec<String> = c.outbox.drain(..).collect();
+        if self.ai {
+            for a in pushed {
+                if let Some(b) = em.unsolicited(&a) {
+                    out.extend_from_slice(&b);
+                }
+            }
+        }
+        out
+    }
+
+    /// Auto-information the core queued by itself (front-panel changes).
+    pub fn pending(&mut self) -> Vec<u8> {
+        self.handle(&[])
+    }
+}
+
 impl SimRadio {
     pub fn new() -> Self {
-        Self { core: Arc::new(Mutex::new(SimCore::new())) }
+        Self::for_model(&FTDX3000)
+    }
+
+    /// A simulated `model`, speaking that radio's own protocol.
+    pub fn for_model(model: &'static RadioModel) -> Self {
+        Self { core: Arc::new(Mutex::new(SimCore::for_model(model))) }
     }
 
     pub fn core(&self) -> parking_lot::MutexGuard<'_, SimCore> {
@@ -518,11 +644,10 @@ impl SimRadio {
 
     /// Serve the simulator over any byte stream (PTY, pipe).
     pub fn serve(&self, mut input: impl Read + Send + 'static, mut output: impl Write + Send + 'static) {
-        let core = self.core.clone();
+        let mut line = SimLine::new(self.core.clone());
         thread::Builder::new()
             .name("sim".into())
             .spawn(move || {
-                let mut framer = Framer::new();
                 let mut buf = [0u8; 256];
                 loop {
                     let n = match input.read(&mut buf) {
@@ -534,22 +659,11 @@ impl SimRadio {
                         Err(e) if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => 0,
                         Err(_) => return,
                     };
-                    let mut out = String::new();
-                    {
-                        let mut c = core.lock();
-                        for f in framer.push(&buf[..n]) {
-                            for a in c.handle(&f) {
-                                out.push_str(&a);
-                            }
-                        }
-                        for a in c.outbox.drain(..) {
-                            out.push_str(&a);
-                        }
-                    }
+                    let out = line.handle(&buf[..n]);
                     // A write fails while nobody has the PTY open; the radio
                     // doesn't care either, so drop the output and carry on.
                     if !out.is_empty() {
-                        let _ = output.write_all(out.as_bytes()).and_then(|_| output.flush());
+                        let _ = output.write_all(&out).and_then(|_| output.flush());
                     }
                 }
             })
@@ -561,7 +675,8 @@ impl SimRadio {
         let (to_sim, sim_in) = pipe::pipe();
         let (sim_out, from_sim) = pipe::pipe();
         self.serve(sim_in, sim_out);
-        Link { reader: Box::new(from_sim), writer: Box::new(to_sim), description: "built-in simulator".into() }
+        let name = self.core.lock().model.name;
+        Link { reader: Box::new(from_sim), writer: Box::new(to_sim), description: format!("built-in {name} simulator") }
     }
 }
 

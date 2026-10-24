@@ -232,7 +232,7 @@ fn client_section(app: &mut App, ui: &mut Ui) {
                 let radio_col = if f.radio == "connected" { GREEN } else { AMBER };
                 ui.label(RichText::new(&f.name).strong().size(15.0));
                 ui.label(RichText::new(f.addr.to_string()).monospace());
-                ui.label(RichText::new(format!("radio {}{}{}", f.radio, if f.audio { " · audio" } else { "" }, if f.auth { " · password required" } else { "" })).color(radio_col));
+                ui.label(RichText::new(format!("{} {}{}{}", f.model.name, f.radio, if f.audio { " · audio" } else { "" }, if f.auth { " · password required" } else { "" })).color(radio_col));
                 if ui.button("Connect").clicked() {
                     app.remote.addr = f.addr.to_string();
                     let t = RemoteTarget { addr: f.addr.to_string(), password: app.remote.password.clone() };

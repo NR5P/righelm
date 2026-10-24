@@ -1,11 +1,16 @@
-//! Find FTDX3000 CAT ports and the radio's USB audio codec without opening
+//! Find radios' CAT ports and their USB audio codecs without opening
 //! anything.
 //!
 //! The FTDX3000 has an internal USB hub carrying a Silicon Labs CP2105 dual
 //! UART (interface 0 = "Enhanced" port for CAT, interface 1 = "Standard" port
 //! for RTS/DTR PTT, CW and FSK keying) and a TI/Burr-Brown PCM2903B audio codec.
 //! Devices that share the hub are the same radio, which is how a CAT port is
-//! paired with its audio device.
+//! paired with its audio device. Yaesu's other USB radios are built the same
+//! way. Icom's (IC-7300, IC-7610, IC-9700) and Kenwood's have a single-port
+//! CP2102 instead, Icom naming the radio in its serial number ("IC-7300
+//! 03001234"); the IC-705 has Icom's own USB serial ports. A single-port
+//! bridge counts as a radio only when it names one or has an audio codec
+//! beside it, so ordinary USB serial adapters aren't mistaken for radios.
 //!
 //! Detection only reads sysfs/procfs. Ports are never opened here: opening a
 //! tty raises RTS/DTR, and on the Standard port that can key the transmitter.
@@ -18,6 +23,24 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const CP2105: (&str, &str) = ("10c4", "ea70");
+const CP2102: (&str, &str) = ("10c4", "ea60");
+const ICOM_VID: &str = "0c26";
+const FTDI_VID: &str = "0403";
+
+/// The radio model named in a USB device's strings ("IC-7300 03001234"),
+/// the longest name that fits (IC-7300MK2 before IC-7300).
+pub fn model_in(text: &str) -> Option<&'static ftdx3000_cat::RadioModel> {
+    let t = text.to_ascii_uppercase().replace(['_', ' '], "-");
+    let compact = t.replace('-', "");
+    ftdx3000_cat::model::all()
+        .iter()
+        .copied()
+        .filter(|m| {
+            let n = m.name.to_ascii_uppercase();
+            n.len() >= 4 && (t.contains(&n) || compact.contains(&n.replace('-', "")))
+        })
+        .max_by_key(|m| m.name.len())
+}
 const SYS_USB: &str = "/sys/bus/usb/devices";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,14 +92,30 @@ impl AudioInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectedRadio {
-    /// USB topology path of the CP2105, e.g. `3-1.2.1`.
+    /// USB topology path of the bridge, e.g. `3-1.2.1`.
     pub usb_path: String,
     pub serial_number: Option<String>,
-    /// Enhanced COM port: CAT.
+    /// The USB serial bridge ("CP2105", "CP2102", "Icom", "FTDI").
+    pub bridge: &'static str,
+    /// The radio its USB strings name, if they do.
+    pub hint: Option<&'static ftdx3000_cat::RadioModel>,
+    /// The CAT port (CP2105: the Enhanced COM port).
     pub cat: PortInfo,
-    /// Standard COM port: RTS/DTR keying.
+    /// CP2105: the Standard COM port, RTS/DTR keying.
     pub keying: Option<PortInfo>,
     pub audio: Option<AudioInfo>,
+}
+
+impl DetectedRadio {
+    /// What to call it: "Icom IC-7300", "Yaesu radio" (a CP2105, which
+    /// doesn't say which), or "Radio".
+    pub fn title(&self) -> String {
+        match self.hint {
+            Some(m) => m.full_name(),
+            None if self.bridge == "CP2105" => "Yaesu radio".into(),
+            None => "Radio".into(),
+        }
+    }
 }
 
 /// Any serial port present on the system (for manual selection).
@@ -308,7 +347,7 @@ pub(crate) fn parse_pactl(text: &str, card: u32) -> Vec<(String, String)> {
     out
 }
 
-/// Find every connected FTDX3000 (CP2105 bridge), with paired audio.
+/// Find every connected radio (by its USB serial bridge), with paired audio.
 pub fn detect_radios() -> Vec<DetectedRadio> {
     #[cfg(target_os = "linux")]
     return linux_detect_radios();
@@ -334,23 +373,44 @@ fn linux_detect_radios() -> Vec<DetectedRadio> {
         if name.contains(':') {
             continue;
         }
-        let vid = read_trim(path.join("idVendor"));
-        let pid = read_trim(path.join("idProduct"));
-        if (vid.as_deref(), pid.as_deref()) != (Some(CP2105.0), Some(CP2105.1)) {
+        let vid = read_trim(path.join("idVendor")).unwrap_or_default();
+        let pid = read_trim(path.join("idProduct")).unwrap_or_default();
+        let bridge = match (vid.as_str(), pid.as_str()) {
+            v if v == CP2105 => "CP2105",
+            v if v == CP2102 => "CP2102",
+            (ICOM_VID, _) => "Icom",
+            (FTDI_VID, _) => "FTDI",
+            _ => continue,
+        };
+        let serial = read_trim(path.join("serial"));
+        let strings = format!(
+            "{} {} {}",
+            read_trim(path.join("manufacturer")).unwrap_or_default(),
+            read_trim(path.join("product")).unwrap_or_default(),
+            serial.clone().unwrap_or_default()
+        );
+        let hint = model_in(&strings);
+        // The USB interfaces with a serial port, in order.
+        let mut ifaces: Vec<(String, String)> = fs::read_dir(&path)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                n.starts_with(&format!("{name}:")).then(|| tty_of_interface(&e.path()).map(|t| (n, t))).flatten()
+            })
+            .collect();
+        ifaces.sort();
+        let Some((_, cat_tty)) = ifaces.first().cloned() else { continue };
+        let keying = (bridge == "CP2105").then(|| ifaces.get(1).map(|(_, t)| port_info(t))).flatten();
+        let audio = parent_path(&name).and_then(audio_near);
+        // A plain USB serial adapter isn't a radio.
+        if bridge != "CP2105" && hint.is_none() && audio.is_none() && !strings.to_ascii_lowercase().contains("elecraft") {
             continue;
         }
-        let Some(cat_tty) = tty_of_interface(&path.join(format!("{name}:1.0"))) else { continue };
-        let keying = tty_of_interface(&path.join(format!("{name}:1.1"))).map(|t| port_info(&t));
-        let audio = parent_path(&name).and_then(audio_near);
-        radios.push(DetectedRadio {
-            serial_number: read_trim(path.join("serial")),
-            cat: port_info(&cat_tty),
-            keying,
-            audio,
-            usb_path: name,
-        });
+        radios.push(DetectedRadio { serial_number: serial, bridge, hint, cat: port_info(&cat_tty), keying, audio, usb_path: name });
     }
-    // Radios with paired audio first: that's almost certainly the FTDX3000.
+    // Radios with paired audio first: that's almost certainly a radio.
     radios.sort_by_key(|r| (r.audio.is_none(), r.usb_path.clone()));
     radios
 }
@@ -404,13 +464,28 @@ mod other {
 
     pub fn detect_radios() -> Vec<DetectedRadio> {
         let ports = serialport::available_ports().unwrap_or_default();
-        // CP2105 ports grouped by USB serial number: (interface, name).
+        // Radio bridges grouped by USB serial number: (interface, name), and
+        // the bridge and the radio its strings name.
         let mut groups: std::collections::BTreeMap<String, Vec<(u8, String)>> = Default::default();
+        let mut kinds: std::collections::BTreeMap<String, (&'static str, Option<&'static ftdx3000_cat::RadioModel>)> = Default::default();
         for p in ports {
             if let serialport::SerialPortType::UsbPort(u) = &p.port_type {
-                if u.vid == 0x10c4 && u.pid == 0xea70 && usable(&p.port_name) {
+                let bridge = match (u.vid, u.pid) {
+                    (0x10c4, 0xea70) => "CP2105",
+                    (0x10c4, 0xea60) => "CP2102",
+                    (0x0c26, _) => "Icom",
+                    (0x0403, _) => "FTDI",
+                    _ => continue,
+                };
+                let strings = format!("{} {} {}", u.manufacturer.clone().unwrap_or_default(), u.product.clone().unwrap_or_default(), u.serial_number.clone().unwrap_or_default());
+                let hint = model_in(&strings);
+                if bridge != "CP2105" && hint.is_none() && !strings.to_ascii_lowercase().contains("elecraft") {
+                    continue;
+                }
+                if usable(&p.port_name) {
                     let key = u.serial_number.clone().unwrap_or_default();
-                    groups.entry(key).or_default().push((u.interface.unwrap_or(u8::MAX), p.port_name.clone()));
+                    groups.entry(key.clone()).or_default().push((u.interface.unwrap_or(u8::MAX), p.port_name.clone()));
+                    kinds.insert(key, (bridge, hint));
                 }
             }
         }
@@ -430,10 +505,13 @@ mod other {
                 // numbers, the first name sorts first.
                 ports.sort();
                 let cat = ports.first()?.1.clone();
-                let keying = ports.get(1).map(|p| info(&p.1));
+                let (bridge, hint) = kinds.get(&serial).copied().unwrap_or(("CP2105", None));
+                let keying = if bridge == "CP2105" { ports.get(1).map(|p| info(&p.1)) } else { None };
                 Some(DetectedRadio {
                     usb_path: serial.clone(),
                     serial_number: (!serial.is_empty()).then_some(serial),
+                    bridge,
+                    hint,
                     cat: info(&cat),
                     keying,
                     audio: audio.clone(),
@@ -512,6 +590,14 @@ Sink #56
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].2, "Audio/Sink");
         assert!(n[0].0.contains("Burr-Brown"));
+    }
+
+    #[test]
+    fn radio_names_in_usb_strings() {
+        assert_eq!(model_in("Silicon Labs CP2102 USB to UART Bridge Controller IC-7300 03001234").map(|m| m.key), Some("ic7300"));
+        assert_eq!(model_in("IC-7300MK2 12345").map(|m| m.key), Some("ic7300mk2"));
+        assert_eq!(model_in("Icom Inc. IC-705 IC-705 12001234").map(|m| m.key), Some("ic705"));
+        assert_eq!(model_in("Silicon Labs CP2105 Dual USB to UART Bridge Controller 00A1B2C3"), None);
     }
 
     #[test]

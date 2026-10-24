@@ -1,9 +1,11 @@
 //! Virtual CAT ports: the Linux answer to Win4Yaesu's "multi port" feature.
 //!
-//! Each virtual port is a PTY that behaves like an FTDX3000 to whatever
+//! Each virtual port is a PTY that behaves like the radio to whatever
 //! program opens it (WSJT-X, fldigi, a logger, a Wine program via a COM
-//! mapping, ...). Commands are multiplexed onto the single real CAT port by
-//! the engine:
+//! mapping, ...): it speaks the connected radio's own protocol (through
+//! that radio's translator, run backwards), or the FTDX3000's if the port is
+//! set to. Commands are multiplexed onto the single real CAT port by the
+//! engine:
 //!
 //! * Read commands are answered from the engine's cache when it is fresh, so
 //!   five programs polling `FA;` cost the radio one read.
@@ -19,7 +21,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ftdx3000_cat::command::{self, Request};
-use ftdx3000_cat::{Framer, frame};
+use ftdx3000_cat::dialect::Emulator;
+use ftdx3000_cat::{Framer, RadioModel, frame};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -41,13 +44,28 @@ pub struct VirtualPortConfig {
     pub block_tx: bool,
     /// Windows only: the com0com port RigHelm opens (programs use its partner).
     pub com_port: String,
+    /// Which radio programs see: empty = the connected radio itself,
+    /// `ftdx3000` = an FTDX3000 whatever the radio (RigHelm's own language,
+    /// which every FTDX3000-aware program understands).
+    pub emulate: String,
 }
 
 impl Default for VirtualPortConfig {
     fn default() -> Self {
-        Self { name: "vcom1".into(), label: String::new(), enabled: true, block_tx: false, com_port: String::new() }
+        Self { name: "vcom1".into(), label: String::new(), enabled: true, block_tx: false, com_port: String::new(), emulate: String::new() }
     }
 }
+
+impl VirtualPortConfig {
+    /// The radio a program on this port sees, with `radio` connected.
+    pub fn seen_as(&self, radio: &'static RadioModel) -> &'static RadioModel {
+        if self.emulate == "ftdx3000" || ftdx3000_cat::dialect::emulator_for(radio).is_none() { &ftdx3000_cat::model::FTDX3000 } else { radio }
+    }
+}
+
+/// The emulator a port uses for the radio it pretends to be (none for the
+/// FTDX3000), shared with its auto-information pusher.
+pub(crate) type SharedEmulator = Arc<Mutex<Option<(&'static RadioModel, Box<dyn Emulator>)>>>;
 
 #[derive(Debug, Clone, Default)]
 pub struct VirtualPortStatus {
@@ -93,7 +111,8 @@ impl VirtualPort {
         let client = Arc::new(ClientCtx::default());
         let connected = Arc::new(AtomicBool::new(false));
 
-        let pusher = ai_pusher(rig.clone(), writer.clone(), client.clone(), connected.clone(), stop.clone(), {
+        let emulator: SharedEmulator = Arc::new(Mutex::new(None));
+        let pusher = ai_pusher_as(rig.clone(), writer.clone(), client.clone(), connected.clone(), stop.clone(), emulator.clone(), {
             let status = status.clone();
             move || status.lock().frames_out += 1
         })?;
@@ -103,7 +122,7 @@ impl VirtualPort {
             let cfg = config.clone();
             thread::Builder::new()
                 .name(format!("vport-{}", config.name))
-                .spawn(move || serve(rig, cfg, pty, writer, client, connected, status, stop))?
+                .spawn(move || serve(rig, cfg, pty, writer, client, connected, status, stop, emulator))?
         };
 
         Ok(VirtualPort { config, status, stop, threads: vec![pusher, server] })
@@ -172,6 +191,20 @@ pub(crate) fn ai_pusher(
     stop: Arc<AtomicBool>,
     on_sent: impl Fn() + Send + 'static,
 ) -> std::io::Result<thread::JoinHandle<()>> {
+    ai_pusher_as(rig, writer, client, connected, stop, Arc::new(Mutex::new(None)), on_sent)
+}
+
+/// [`ai_pusher`] for a client that sees another radio: frames go through
+/// its emulator.
+pub(crate) fn ai_pusher_as(
+    rig: Rig,
+    writer: SharedWriter,
+    client: Arc<ClientCtx>,
+    connected: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+    emulator: SharedEmulator,
+    on_sent: impl Fn() + Send + 'static,
+) -> std::io::Result<thread::JoinHandle<()>> {
     let updates = rig.subscribe();
     thread::Builder::new().name("ai-pusher".into()).spawn(move || {
         while !stop.load(Ordering::Relaxed) {
@@ -184,7 +217,17 @@ pub(crate) fn ai_pusher(
                 .filter(|(c, _)| !matches!(c.as_str(), "SM" | "RM" | "BY"))
                 .and_then(|(c, _)| command::lookup(&c))
                 .is_some_and(|c| c.ai);
-            if is_ai && writer.lock().write_all(u.frame.as_bytes()).is_ok() {
+            if !is_ai {
+                continue;
+            }
+            let bytes = match emulator.lock().as_mut() {
+                Some((_, em)) => match em.unsolicited(&u.frame) {
+                    Some(b) => b,
+                    None => continue,
+                },
+                None => u.frame.clone().into_bytes(),
+            };
+            if writer.lock().write_all(&bytes).is_ok() {
                 on_sent();
             }
         }
@@ -201,6 +244,7 @@ fn serve(
     connected: Arc<AtomicBool>,
     status: Arc<Mutex<VirtualPortStatus>>,
     stop: Arc<AtomicBool>,
+    emulator: SharedEmulator,
 ) {
     let source = Source::Client(if config.label.is_empty() { config.name.clone() } else { config.label.clone() });
     let mut framer = Framer::new();
@@ -267,6 +311,32 @@ fn serve(
             }
         };
         mark_open();
+        // The radio a program sees follows the radio connected.
+        let seen = config.seen_as(rig.model());
+        let mut emu = emulator.lock();
+        if emu.as_ref().map(|e| e.0) != Some(seen).filter(|m| !m.is_ftdx3000()) {
+            *emu = ftdx3000_cat::dialect::emulator_for(seen).map(|e| (seen, e));
+        }
+        if let Some((_, em)) = emu.as_mut() {
+            for f in em.split(&buf[..n]) {
+                let reply = handle_as(&rig, &config, &source, &client, em.as_mut(), &f);
+                {
+                    let mut s = status.lock();
+                    s.frames_in += 1;
+                    s.last_activity = Some(Instant::now());
+                    s.last_command = String::from_utf8_lossy(&f).chars().filter(|c| !c.is_control()).collect();
+                    s.client_ai = client.ai.load(Ordering::Relaxed);
+                    if reply.is_some() {
+                        s.frames_out += 1;
+                    }
+                }
+                if let Some(r) = reply {
+                    let _ = writer.lock().write_all(&r);
+                }
+            }
+            continue;
+        }
+        drop(emu);
         for f in framer.push(&buf[..n]) {
             let reply = handle(&rig, &config, &source, &client, &f);
             {
@@ -318,6 +388,46 @@ pub(crate) fn handle(rig: &Rig, config: &VirtualPortConfig, source: &Source, cli
         }
         Request::Unknown => Some("?;".into()),
     }
+}
+
+/// Handle one frame from a client that sees another radio (through its
+/// emulator); returns the bytes to send back, if any.
+pub(crate) fn handle_as(rig: &Rig, config: &VirtualPortConfig, source: &Source, client: &ClientCtx, em: &mut dyn Emulator, f: &[u8]) -> Option<Vec<u8>> {
+    let req = em.request(f);
+    if let Some(on) = req.auto_info {
+        client.ai.store(on, Ordering::Relaxed);
+    }
+    let set = |cmd: &str| {
+        if command::is_tx_command(cmd) && config.block_tx {
+            rig.note(format!("{source}: blocked {cmd} (transmit not allowed)"));
+            return;
+        }
+        client.observe_set(cmd);
+        rig.send_from(cmd, source.clone());
+    };
+    for s in &req.sets {
+        set(s);
+    }
+    let reply = if let Some(now) = req.immediate.clone() {
+        Some(now)
+    } else if req.reads.is_empty() {
+        Some(em.respond(&req, &[]))
+    } else {
+        let mut answers = Vec::new();
+        for r in &req.reads {
+            match rig.read(r, Freshness::Auto, source.clone(), Duration::from_millis(1500)) {
+                Ok(a) => answers.push(Some(a)),
+                Err(CatError::Rejected | CatError::Invalid) => answers.push(None),
+                // A radio that doesn't answer is emulated by not answering.
+                Err(_) => return None,
+            }
+        }
+        Some(em.respond(&req, &answers))
+    };
+    for s in em.after() {
+        set(&s);
+    }
+    reply.filter(|r| !r.is_empty())
 }
 
 #[cfg(all(test, unix))]

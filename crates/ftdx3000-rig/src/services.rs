@@ -11,7 +11,7 @@ use crate::engine::{EngineConfig, Rig};
 use crate::remote::{AudioClient, Discovery, RemoteClientConfig, RemoteServer, RemoteServerConfig, RemoteTarget, ScopeClient};
 use crate::rigctld::{RigctldConfig, RigctldServer};
 use crate::scope::{CalibrationFix, Scope, ScopeConfig, ScopeStatus, ScopeTap};
-use crate::txaudio::{self, MIC_SEL_FRONT, MIC_SEL_MENUS, MIC_SEL_USB, MicBridge, MicStatus, TxAudioConfig};
+use crate::txaudio::{self, MicBridge, MicStatus, TxAudioConfig};
 use crate::vport::{VirtualPort, VirtualPortConfig, VirtualPortStatus};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -454,20 +454,28 @@ impl Services {
     /// Send the MIC SEL menu values the switch calls for.
     fn apply_mic_sel(&mut self) {
         let t = &mut self.config.tx_audio;
-        for menu in MIC_SEL_MENUS {
+        let model = self.rig.model();
+        let roles = model.roles;
+        // Saved for another radio: those item numbers mean other things here.
+        let saved_for = if t.saved_for.is_empty() { "ftdx3000" } else { t.saved_for.as_str() };
+        if saved_for != model.key {
+            t.saved_mic_sel.clear();
+        }
+        t.saved_for = model.key.to_string();
+        for &menu in roles.mic_sel {
             let now = txaudio::mic_sel(&self.rig, menu);
             let want = if t.computer_mic {
                 // Remember the radio's own setting to go back to.
-                if let Some(v) = now.filter(|&v| v != MIC_SEL_USB) {
+                if let Some(v) = now.filter(|&v| v != roles.mic_usb) {
                     t.saved_mic_sel.retain(|(m, _)| *m != menu);
                     t.saved_mic_sel.push((menu, v));
                 }
-                MIC_SEL_USB
+                roles.mic_usb
             } else {
-                t.saved_mic_sel.iter().find(|(m, _)| *m == menu).map(|(_, v)| *v).filter(|&v| v != MIC_SEL_USB).unwrap_or(MIC_SEL_FRONT)
+                t.saved_mic_sel.iter().find(|(m, _)| *m == menu).map(|(_, v)| *v).filter(|&v| v != roles.mic_usb).unwrap_or(roles.mic_front)
             };
             if now != Some(want) {
-                self.rig.send(txaudio::mic_sel_cmd(menu, want));
+                self.rig.send(txaudio::mic_sel_cmd(&self.rig, menu, want));
             }
         }
         if !t.computer_mic {
@@ -572,12 +580,12 @@ impl Services {
         if self.mic_applied || !self.config.tx_audio.computer_mic {
             return;
         }
-        if MIC_SEL_MENUS.iter().all(|&m| txaudio::mic_sel(&self.rig, m).is_some()) {
+        if self.rig.model().roles.mic_sel.iter().all(|&m| txaudio::mic_sel(&self.rig, m).is_some()) {
             self.apply_mic_sel();
             let _ = self.config.save();
         } else if self.last_mic_refresh.elapsed() > std::time::Duration::from_secs(3) {
             self.last_mic_refresh = std::time::Instant::now();
-            let cmds: Vec<String> = MIC_SEL_MENUS.iter().map(|&m| ftdx3000_cat::menu::read_cmd(m)).collect();
+            let cmds: Vec<String> = self.rig.model().roles.mic_sel.iter().map(|&m| ftdx3000_cat::menu::read_cmd(m)).collect();
             self.rig.refresh(&cmds.iter().map(String::as_str).collect::<Vec<_>>());
         }
     }
