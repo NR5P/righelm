@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use crate::audio::AudioDevice;
 use crate::cw::{CwConfig, CwKeyer, KeyLine, LocalKeyLine, RemoteKeyLine};
 use crate::engine::{EngineConfig, Rig};
-use crate::remote::{AudioClient, Discovery, RemoteClientConfig, RemoteServer, RemoteServerConfig, RemoteTarget};
+use crate::remote::{AudioClient, Discovery, RemoteClientConfig, RemoteServer, RemoteServerConfig, RemoteTarget, ScopeClient};
 use crate::rigctld::{RigctldConfig, RigctldServer};
+use crate::scope::{CalibrationFix, Scope, ScopeConfig, ScopeStatus, ScopeTap};
 use crate::txaudio::{self, MIC_SEL_FRONT, MIC_SEL_MENUS, MIC_SEL_USB, MicBridge, MicStatus, TxAudioConfig};
 use crate::vport::{VirtualPort, VirtualPortConfig, VirtualPortStatus};
 
@@ -35,6 +36,8 @@ pub struct Config {
     pub tx_audio: TxAudioConfig,
     /// CW keying from this computer (never armed at start-up).
     pub cw: CwConfig,
+    /// Band scope from an RTL-SDR dongle on the radio's IF OUT or RX OUT.
+    pub scope: ScopeConfig,
     /// Display preferences for the desktop app.
     pub ui: UiPrefs,
 }
@@ -61,6 +64,18 @@ pub struct UiPrefs {
     pub firewall_ok: bool,
     /// Hold the space bar to transmit (push-to-talk).
     pub space_ptt: bool,
+    /// Show the band scope when an RTL-SDR dongle is found.
+    pub show_scope: bool,
+    /// Band scope span in Hz; 0 = everything the dongle covers.
+    pub scope_span: u32,
+    /// Band scope rows per second.
+    pub scope_fps: u32,
+    pub scope_auto: bool,
+    pub scope_floor_db: i32,
+    pub scope_range_db: i32,
+    pub scope_height: u32,
+    /// Show the US band plan (CW/data and phone segments) and FT8/FT4 spots.
+    pub scope_band_plan: bool,
 }
 
 impl Default for UiPrefs {
@@ -78,6 +93,14 @@ impl Default for UiPrefs {
             wf_height: 180,
             firewall_ok: false,
             space_ptt: true,
+            show_scope: true,
+            scope_span: 200_000,
+            scope_fps: 15,
+            scope_auto: true,
+            scope_floor_db: -100,
+            scope_range_db: 50,
+            scope_height: 220,
+            scope_band_plan: true,
         }
     }
 }
@@ -118,6 +141,7 @@ impl Default for Config {
             last_remote: None,
             tx_audio: TxAudioConfig::default(),
             cw: CwConfig::default(),
+            scope: ScopeConfig::default(),
             ui: UiPrefs::default(),
         }
     }
@@ -211,6 +235,13 @@ pub struct Services {
     cw: Option<CwKeyer>,
     /// Why the CW key was last disarmed by itself.
     pub cw_disarmed: Option<String>,
+    /// Band scope rows and status: from the local dongle, or from the remote
+    /// radio's computer.
+    pub scope_tap: ScopeTap,
+    scope: Option<Scope>,
+    scope_client: Option<(RemoteTarget, ScopeClient)>,
+    /// What the last band scope calibration found.
+    pub scope_calibration: Option<String>,
 }
 
 /// The radio codec's capture and playback devices, if detected.
@@ -236,7 +267,12 @@ impl Services {
             last_mic_refresh: std::time::Instant::now(),
             cw: None,
             cw_disarmed: None,
+            scope_tap: ScopeTap::default(),
+            scope: None,
+            scope_client: None,
+            scope_calibration: None,
         };
+        s.apply_scope();
         s.apply_local_rx();
         s.apply_tx_audio();
         s.discovery = Discovery::start().map_err(|e| log::warn!("LAN discovery unavailable: {e}")).ok();
@@ -297,7 +333,7 @@ impl Services {
             return;
         }
         self.remote_server = None;
-        let r = RemoteServer::start(self.rig.clone(), want.clone()).map_err(|e| e.to_string());
+        let r = RemoteServer::start(self.rig.clone(), want.clone(), self.scope_tap.clone()).map_err(|e| e.to_string());
         if let Err(e) = &r {
             self.rig.note(format!("remote server on {} failed: {e}", want.bind));
         }
@@ -328,6 +364,51 @@ impl Services {
             let device = || radio_audio_devices().0;
             self.local_rx = Some(crate::spectrum::LocalRxAudio::start(self.rx_tap.clone(), device, crate::remote::AUDIO_RATE));
         }
+    }
+
+    /// Run the local band scope, or show the remote radio's, to match the
+    /// config. Call after changing `config.scope`.
+    pub fn apply_scope(&mut self) {
+        match self.config.engine.remote.clone() {
+            Some(target) => {
+                self.scope = None;
+                if self.scope_client.as_ref().is_none_or(|(t, _)| *t != target) {
+                    self.scope_client = None;
+                    self.scope_client = Some((target.clone(), ScopeClient::start(target, self.scope_tap.clone())));
+                }
+            }
+            None => {
+                self.scope_client = None;
+                match &self.scope {
+                    Some(s) => s.update(self.config.scope.clone()),
+                    None => self.scope = Some(Scope::start(self.rig.clone(), self.scope_tap.clone(), self.config.scope.clone())),
+                }
+            }
+        }
+    }
+
+    /// Keep the result of a band scope calibration (local dongle only).
+    fn apply_calibration(&mut self) {
+        let Some(c) = self.scope_tap.take_calibration() else { return };
+        if self.config.engine.remote.is_none() {
+            let cfg = &mut self.config.scope;
+            match c.fix {
+                Some(CalibrationFix::Ppm(ppm, fine)) => (cfg.ppm, cfg.ppm_fine) = (ppm, fine),
+                Some(CalibrationFix::IfHz(hz)) => cfg.if_hz = hz,
+                None => {}
+            }
+            if c.fix.is_some() {
+                cfg.calibrated = true;
+                self.apply_scope();
+                let _ = self.config.save();
+            }
+        }
+        self.rig.note(format!("band scope calibration: {}", c.message));
+        self.scope_calibration = Some(c.message);
+    }
+
+    pub fn scope_status(&self) -> ScopeStatus {
+        self.scope_tap.status()
     }
 
     /// Where the waterfall's audio comes from, or why there is none.
@@ -445,8 +526,9 @@ impl Services {
 
     /// Call regularly (every frame or so): after a (re)connect, set the
     /// radio's MIC SEL menus again if the computer mic is on; disarm the CW
-    /// key when it should no longer be live.
+    /// key when it should no longer be live; keep a band scope calibration.
     pub fn tick(&mut self) {
+        self.apply_calibration();
         if let Some(k) = &self.cw {
             let st = k.status();
             let settled = k.armed_at.elapsed() > std::time::Duration::from_secs(3);
@@ -509,6 +591,7 @@ impl Services {
         self.audio_client = None;
         self.apply_remote_server();
         self.apply_local_rx();
+        self.apply_scope();
         self.connect();
         self.apply_tx_audio();
     }
@@ -521,6 +604,7 @@ impl Services {
         self.rig.disconnect();
         self.apply_remote_server();
         self.apply_local_rx();
+        self.apply_scope();
         self.apply_tx_audio();
         if !self.config.engine.serial.path.is_empty() {
             self.connect();
@@ -552,6 +636,8 @@ impl Services {
         self.local_rx = None;
         self.mic_bridge = None;
         self.cw = None;
+        self.scope = None;
+        self.scope_client = None;
         self.rig.shutdown();
         // Give the engine a moment to un-key and send AI0.
         std::thread::sleep(std::time::Duration::from_millis(150));

@@ -16,8 +16,11 @@ port and shares it with any number of other programs, on this computer or across
 - **Audio waterfall.** A scrolling spectrogram of the radio's receive audio (up to 6 kHz),
   with the filter passband and CW pitch overlaid. Hover shows a signal's radio frequency;
   in CW, click a trace to zero-beat it. It shares the radio's sound card with WSJT-X, and
-  works from a remote computer too. The FTDX3000 doesn't send its own scope over CAT, so a
-  wide panadapter would need an SDR on an IF tap.
+  works from a remote computer too.
+- **Band scope.** Plug an RTL-SDR dongle into the radio's IF OUT or RX OUT jack and a
+  wide spectrum and waterfall of the band (up to 1.6 MHz) appears by itself, follows the
+  VFO, and tunes the radio with a click. Nothing else to install, and remote computers
+  see it too (see below).
 - **Auto-detect.** Finds the radio's CP2105 USB bridge (Enhanced = CAT, Standard = keying)
   and the radio's own USB audio codec. The two are paired because they sit on the same
   internal USB hub of the radio. The baud rate and handshake are probed on connect.
@@ -126,6 +129,8 @@ Notes for Windows:
   ("USB Audio CODEC").
 - Allow RigHelm through Windows Firewall when asked if you use LAN remote.
 - `righelm-sim` (the simulator) needs a Unix pseudo-terminal and is Linux/macOS only.
+- The band scope's RTL-SDR dongle needs the WinUSB driver on Windows: install it for
+  "Bulk-In, Interface (Interface 0)" with [Zadig](https://zadig.akeo.ie/).
 
 ## Radio settings
 
@@ -263,6 +268,85 @@ radio**, set a password, and enable it. On any other computer, start the app and
 - **No stale commands.** Commands sent while the radio is disconnected are discarded, not
   replayed later.
 
+## Band scope (RTL-SDR dongle)
+
+The FTDX3000 doesn't send its own scope over CAT. An inexpensive RTL-SDR dongle on one of
+the radio's rear jacks gives RigHelm a wide band scope instead:
+
+1. Connect the dongle's antenna input to the radio's **IF OUT** jack (RCA). If your radio
+   has no IF OUT, use **RX OUT**. Never connect it to an antenna jack or anything that
+   carries transmit power: 100 W destroys the dongle.
+2. Plug the dongle into the computer's USB. That's all. RigHelm finds it, also when it is
+   plugged in later, and a **BAND SCOPE** panel appears on the Operate page.
+3. In *Settings → Band scope*, say which jack it is on (IF OUT is the default).
+
+On screen:
+
+- The amber line is the receive dial, with the filter passband shaded; a red line marks
+  the transmit frequency when you work split. Outside the amateur bands is dimmed, and a
+  thin strip under the spectrum shows the US band plan (blue CW/data, green phone) with
+  the FT8/FT4 calling frequencies in purple (*Settings → Display* turns it off).
+- The bright line is the spectrum, the faint one above it the recent peaks.
+- **Click a signal to go straight to it.** Hover first and the scope marks the signal it
+  found and shows where a click will tune. It looks at the signal at full resolution and
+  tunes the way the mode needs:
+  - **CW**: zero-beat (the signal heard at your CW pitch), then a final touch from the
+    audio once the radio has settled.
+  - **SSB**: onto the suppressed carrier, just past the edge of the voice.
+  - **AM/FM**: onto the carrier.
+  - **DATA**: inside an FT8/FT4 window, to its calling frequency; elsewhere the signal is
+    centred in the passband.
+
+  **Shift+click** tunes exactly where you click. **Scroll** tunes by the tuning step,
+  **Ctrl+scroll** zooms. *Span → Full* shows everything the dongle covers (about 1.6 MHz).
+- The view moves by itself to keep the dial in sight.
+- While the radio transmits, the scope pauses (the picture would mean nothing).
+
+The two jacks behave differently:
+
+| jack | what the dongle sees | how the scope follows you |
+|------|----------------------|---------------------------|
+| IF OUT | the radio's 9 MHz first IF, before the roofing filter | the radio tunes it: the picture always sits around the dial, filtered by the radio's own front end |
+| RX OUT | the receive antenna signal | the dongle retunes itself: the whole band when it fits (160–12 m), otherwise around the dial |
+
+**Calibration** is automatic. Shortwave broadcast stations sit exactly on 5 kHz channels
+and time signals (WWV, CHU) on exact frequencies, so the first time some are in view
+(40 m at night next to the 41 m broadcast band, 20 m by day next to 22 m), RigHelm
+measures them and corrects itself: the dongle's crystal on RX OUT (typically a couple of
+ppm, which is 15–20 Hz on 40 m), the IF frequency on IF OUT. Everything is in
+*Settings → Band scope*:
+
+- **Calibrate now** measures again (a few seconds), and the result is shown beneath.
+- **Reset** forgets the calibration; it calibrates itself again.
+- **Dongle correction by hand** (ppm), if you'd rather set it yourself.
+- IF OUT only: **IF frequency** and **Flipped**. If signals move the wrong way when you
+  tune, change *Flipped*.
+
+To check it, hover over a broadcast station's carrier: it should read on a 5 kHz step
+(say 7.335.000), or WWV exactly 10.000.000.
+
+Dongles:
+
+- **RTL-SDR Blog V4** covers HF with its built-in upconverter.
+- **RTL-SDR Blog V3** and other R820T dongles sample HF directly (the "Q branch"
+  input). A no-name TV stick without that wiring shows only noise below 28.8 MHz.
+- No driver or other program is needed: RigHelm talks to the dongle itself, on Linux and
+  macOS alike, and takes it from the Linux TV driver if that grabbed it. With two dongles,
+  pick one in Settings.
+- **Linux permissions:** desktop distributions with systemd let the logged-in user open
+  SDR dongles. If Settings says the dongle can't be opened, add a udev rule:
+
+  ```bash
+  echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", MODE="0660", TAG+="uaccess"' | sudo tee /etc/udev/rules.d/60-rtl-sdr.rules
+  ```
+
+  then unplug and replug the dongle.
+
+**Remote:** a computer controlling the radio over the LAN shows the radio computer's band
+scope, with no dongle of its own. It asks for just the view it shows, so the stream is
+about 130 kbit/s at the normal speed (250 at fast), over the same TCP port 4533. The dongle only runs
+while somebody is looking at the scope.
+
 ## Testing without the radio
 
 ```bash
@@ -291,6 +375,18 @@ cargo run --release --example cw_check
 cargo run --release --example mic_check
 ```
 
+Two checks for the band scope never send anything to the radio. The first opens the
+dongle and prints what it sees (`if` or `rx` for the jack it is on, then the dial
+frequency). The second shows simulated band activity instead of a dongle:
+
+```bash
+cargo run --release --example scope_check -- if 14200000
+```
+
+```bash
+RIGHELM_SCOPE_SIM=1 cargo run --release --bin righelm
+```
+
 ## Files
 
 - Config: `~/.config/ftdx3000/config.toml` (override with `FTDX3000_CONFIG`).
@@ -300,7 +396,8 @@ cargo run --release --example mic_check
 ## Notes and limits
 
 - Meter calibrations (SWR, ID, VDD) are approximate until checked against the radio.
-- The FTDX3000 does not send its band scope over CAT, so there is no panadapter.
+- The FTDX3000 does not send its band scope over CAT; the band scope needs an RTL-SDR
+  dongle on IF OUT or RX OUT.
 - DATA-mode filter widths follow menu 067: PSK widths when DATA MODE = PSK, SSB widths
   when OTHER.
 

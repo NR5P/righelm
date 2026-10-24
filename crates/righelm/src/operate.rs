@@ -108,6 +108,8 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             ui.add_space(4.0);
             filter_strip(ui, &rig, &s);
             ui.add_space(4.0);
+            crate::scope::show(app, ui, &rig, &s);
+            ui.add_space(4.0);
             crate::waterfall::show(app, ui, &rig, &s);
             ui.add_space(6.0);
             ui.columns(3, |cols| {

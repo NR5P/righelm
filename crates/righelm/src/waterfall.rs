@@ -37,7 +37,7 @@ impl Default for Waterfall {
 }
 
 /// Black → blue → cyan → yellow → orange → white.
-fn palette() -> Vec<Color32> {
+pub(crate) fn palette() -> Vec<Color32> {
     let stops: [(f32, [f32; 3]); 6] = [
         (0.0, [0.0, 0.0, 6.0]),
         (0.25, [10.0, 26.0, 110.0]),
@@ -60,7 +60,7 @@ fn palette() -> Vec<Color32> {
 
 /// Is a CW signal heard on the upper side of the carrier (like USB)?
 /// Menu 060 CW BFO: 0 USB, 1 LSB, 2 AUTO (LSB below 10 MHz). CW-R flips it.
-fn cw_upper(s: &RadioState, mode: Mode, dial: u64) -> bool {
+pub(crate) fn cw_upper(s: &RadioState, mode: Mode, dial: u64) -> bool {
     let normal = match s.menu.get(&60).map(String::as_str) {
         Some("1") => false,
         Some("2") => dial >= 10_000_000,
@@ -69,18 +69,18 @@ fn cw_upper(s: &RadioState, mode: Mode, dial: u64) -> bool {
     if mode == Mode::CwR { !normal } else { normal }
 }
 
-fn pitch(s: &RadioState) -> f32 {
+pub(crate) fn pitch(s: &RadioState) -> f32 {
     300.0 + 10.0 * s.key_pitch as f32
 }
 
 /// The receiving VFO's dial frequency and mode.
-fn rx_vfo(s: &RadioState) -> Option<(u64, Mode)> {
+pub(crate) fn rx_vfo(s: &RadioState) -> Option<(u64, Mode)> {
     if s.rx_on_b() { Some((s.freq_b, s.mode_b?)) } else { Some((s.freq_a, s.mode_a?)) }
 }
 
 /// Radio frequency of a signal heard at audio frequency `af`, if the mode
 /// has a defined relationship (not AM/FM).
-fn rf_of_audio(s: &RadioState, af: f32) -> Option<f64> {
+pub(crate) fn rf_of_audio(s: &RadioState, af: f32) -> Option<f64> {
     let (dial, mode) = rx_vfo(s)?;
     let (upper, offset) = match mode {
         Mode::Cw | Mode::CwR => {
@@ -106,7 +106,7 @@ fn rf_of_audio(s: &RadioState, af: f32) -> Option<f64> {
 }
 
 /// Where the filter passband sits in the audio.
-fn passband(s: &RadioState) -> Option<(f32, f32)> {
+pub(crate) fn passband(s: &RadioState) -> Option<(f32, f32)> {
     let (_, mode) = rx_vfo(s)?;
     let width = match s.width_class(mode) {
         WidthClass::Fixed => 3000.0,
@@ -172,6 +172,31 @@ impl Waterfall {
                 *a = 0.7 * *a + 0.3 * v;
             }
         }
+    }
+}
+
+impl Waterfall {
+    /// Lines drawn so far (to wait for fresh audio after retuning).
+    pub fn lines(&self) -> u64 {
+        self.lines
+    }
+
+    /// The exact audio frequency of the strongest clear tone within `width`
+    /// Hz of `hz`, from the recent spectrum (`max_hz` = the span shown).
+    pub fn tone_near(&self, max_hz: f32, hz: f32, width: f32) -> Option<f32> {
+        if self.last_audio.is_none_or(|t| t.elapsed().as_secs_f32() > 1.0) {
+            return None;
+        }
+        let col = |f: f32| f / max_hz * COLS as f32 - 0.5;
+        let (a, b) = (col(hz - width).max(1.0) as usize, (col(hz + width).max(0.0) as usize).min(COLS - 2));
+        let k = (a..=b).max_by(|x, y| self.avg[*x].total_cmp(&self.avg[*y]))?;
+        if self.avg[k] < self.noise + 12.0 {
+            return None;
+        }
+        let (l, c, r) = (self.avg[k - 1], self.avg[k], self.avg[k + 1]);
+        let d = l - 2.0 * c + r;
+        let off = if d < 0.0 { (0.5 * (l - r) / d).clamp(-0.5, 0.5) } else { 0.0 };
+        Some((k as f32 + 0.5 + off) / COLS as f32 * max_hz)
     }
 }
 

@@ -13,6 +13,8 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         ui.add_space(12.0);
         crate::cw_key::settings_panel(app, ui);
         ui.add_space(12.0);
+        scope_panel(app, ui);
+        ui.add_space(12.0);
         display(app, ui);
         ui.add_space(12.0);
         about(app, ui);
@@ -156,6 +158,109 @@ fn mic_controls(app: &mut App, ui: &mut Ui, remote: bool) {
     }
 }
 
+/// The RTL-SDR band scope: which jack the dongle is on, and calibration.
+fn scope_panel(app: &mut App, ui: &mut Ui) {
+    use ftdx3000_rig::scope::{DEFAULT_IF_HZ, Feed};
+    let status = app.services.scope_status();
+    let remote = app.services.config.engine.remote.is_some();
+    let before = app.services.config.scope.clone();
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new("Band scope (RTL-SDR)").strong().size(16.0).color(AMBER));
+        let color = if status.running { GREEN } else if status.present { AMBER } else { DIM };
+        ui.label(RichText::new(if status.text.is_empty() { "starting…" } else { &status.text }).color(color));
+        if remote {
+            ui.label(RichText::new("The band scope comes from the dongle on the radio's computer; it is set up there.").color(DIM));
+            return;
+        }
+        let cfg = &mut app.services.config.scope;
+        ui.checkbox(&mut cfg.enabled, "Use an RTL-SDR dongle when one is plugged in");
+        if status.dongles.len() > 1 {
+            ui.horizontal(|ui| {
+                ui.label("Dongle");
+                let shown = status.dongles.iter().find(|(serial, _)| *serial == cfg.serial).map_or("first one found", |(_, d)| d.as_str()).to_string();
+                egui::ComboBox::from_id_salt("scope-dongle").selected_text(shown).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut cfg.serial, String::new(), "first one found");
+                    for (serial, desc) in &status.dongles {
+                        ui.selectable_value(&mut cfg.serial, serial.clone(), desc);
+                    }
+                });
+            });
+        }
+        ui.horizontal(|ui| {
+            ui.label("Connected to the radio's");
+            ui.selectable_value(&mut cfg.feed, Feed::IfOut, "IF OUT (9 MHz)")
+                .on_hover_text("The radio's first IF. The picture follows the VFO and the radio's own front end filters it.");
+            ui.selectable_value(&mut cfg.feed, Feed::RxOut, "RX OUT (antenna)")
+                .on_hover_text("The receive antenna signal. The dongle tunes itself to show the whole band (or around the VFO).");
+        });
+        if cfg.feed == Feed::IfOut {
+            ui.horizontal(|ui| {
+                ui.label("IF frequency");
+                ui.add(egui::DragValue::new(&mut cfg.if_hz).range(DEFAULT_IF_HZ - 50_000..=DEFAULT_IF_HZ + 50_000).speed(10).suffix(" Hz"));
+                if ui.small_button("reset").clicked() {
+                    cfg.if_hz = DEFAULT_IF_HZ;
+                }
+                ui.checkbox(&mut cfg.if_inverted, "Flipped")
+                    .on_hover_text("Higher frequencies come out lower in the IF. Untick if signals move the wrong way when you tune.");
+            });
+            ui.label(
+                RichText::new(
+                    "If signals move the wrong way when you tune, change Flipped. If they sit a little off the dial line, use Calibrate now, or nudge the IF frequency.",
+                )
+                .color(DIM),
+            );
+        }
+
+        // Calibration: automatic from broadcast and time-signal carriers, or by hand.
+        ui.add_space(4.0);
+        ui.label(RichText::new("Frequency calibration").strong());
+        ui.horizontal(|ui| {
+            let now = if cfg.feed == Feed::IfOut {
+                format!("IF frequency {} Hz", cfg.if_hz)
+            } else {
+                format!("dongle correction {:+.2} ppm", cfg.ppm as f64 + cfg.ppm_fine)
+            };
+            let state = if cfg.calibrated { "calibrated" } else { "not calibrated yet" };
+            ui.label(format!("{now} · {state}"));
+            if ui
+                .add_enabled(status.present, egui::Button::new("Calibrate now"))
+                .on_hover_text("Measures shortwave broadcast stations and time signals (WWV, CHU) in view, whose frequencies are exact, and corrects the scope to match. Takes a few seconds.")
+                .on_disabled_hover_text("Plug in the RTL-SDR dongle first.")
+                .clicked()
+            {
+                app.services.scope_tap.request_calibration();
+            }
+            if ui.button("Reset").on_hover_text("Forget the calibration and start over (it calibrates itself again).").clicked() {
+                (cfg.ppm, cfg.ppm_fine, cfg.if_hz, cfg.calibrated) = (0, 0.0, DEFAULT_IF_HZ, false);
+            }
+        });
+        if let Some(msg) = &app.services.scope_calibration {
+            ui.label(RichText::new(format!("Last calibration: {msg}")).color(DIM));
+        }
+        ui.horizontal(|ui| {
+            ui.label("Dongle correction by hand");
+            let r = ui.add(egui::DragValue::new(&mut cfg.ppm).range(-200..=200).suffix(" ppm"));
+            if r.changed() {
+                // Taken over by hand: no fine part, no automatic correction.
+                cfg.ppm_fine = 0.0;
+                cfg.calibrated = true;
+            }
+        });
+        ui.label(
+            RichText::new(
+                "It calibrates itself the first time broadcast stations are in view (e.g. 40 m at night next to the 41 m broadcast band, or 20 m by day). \
+                 To check it: hover over a broadcast station's carrier, which sits exactly on a 5 kHz step (7.335.000), or WWV on 10.000.000.",
+            )
+            .color(DIM),
+        );
+    });
+    if app.services.config.scope != before {
+        app.services.apply_scope();
+        let _ = app.services.config.save();
+    }
+}
+
 fn display(app: &mut App, ui: &mut Ui) {
     let before = app.services.config.ui.clone();
     egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -166,6 +271,12 @@ fn display(app: &mut App, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label("Waterfall height");
             ui.add(egui::Slider::new(&mut prefs.wf_height, 80..=600).suffix(" px"));
+        });
+        ui.checkbox(&mut prefs.show_scope, "Show the band scope on the Operate page (when an RTL-SDR dongle is found)");
+        ui.checkbox(&mut prefs.scope_band_plan, "Band scope: show the US band plan (CW/data and phone) and FT8/FT4 calling frequencies");
+        ui.horizontal(|ui| {
+            ui.label("Band scope waterfall height");
+            ui.add(egui::Slider::new(&mut prefs.scope_height, 100..=700).suffix(" px"));
         });
         ui.checkbox(&mut prefs.show_macros, "Show the macro buttons on the Operate page");
         ui.checkbox(&mut prefs.show_rotator, "Show rotator control (Yaesu G-800DXA/1000DXA/2800DXA on the radio's ROT jack)");

@@ -6,6 +6,7 @@ mod memories;
 mod menu_tab;
 mod operate;
 mod remote_tab;
+mod scope;
 mod settings_tab;
 mod sharing;
 mod waterfall;
@@ -56,6 +57,7 @@ pub struct App {
     pub cw_key: cw_key::CwKeyState,
     pub logo: egui::TextureHandle,
     pub waterfall: waterfall::Waterfall,
+    pub scope: scope::BandScope,
     /// Self-test: render each tab to `<dir>/<tab>.ppm` and exit
     /// (`FTDX3000_SCREENSHOTS=dir`).
     screenshots: Option<(std::path::PathBuf, Instant, usize)>,
@@ -113,6 +115,7 @@ impl App {
             cw_key: Default::default(),
             logo,
             waterfall: Default::default(),
+            scope: Default::default(),
             screenshots: std::env::var_os("FTDX3000_SCREENSHOTS").map(|d| (d.into(), Instant::now(), 0)),
             space_keyed: false,
         }
@@ -285,6 +288,10 @@ impl eframe::App for App {
             Tab::Console => console::show(self, ui),
             Tab::Settings => settings_tab::show(self, ui),
         });
+        // Only watch the dongle while the scope is on screen.
+        if self.tab != Tab::Operate {
+            self.scope.pause();
+        }
         let ctx = ui.ctx().clone();
         self.screenshot_step(&ctx);
         // Meters keep moving even when nothing else changes.
