@@ -23,6 +23,14 @@ impl Default for MemoriesState {
     }
 }
 
+impl MemoriesState {
+    /// The link is down: read the channels again once it's back, if they
+    /// never arrived.
+    pub fn link_down(&mut self) {
+        self.requested = None;
+    }
+}
+
 /// An FTDX3000 channel's name (`005`, `P-1L`).
 #[cfg(test)]
 fn channel_name(ch: u16) -> String {

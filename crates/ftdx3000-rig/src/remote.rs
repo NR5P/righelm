@@ -1524,6 +1524,31 @@ mod tests {
     }
 
     #[test]
+    fn memory_channels_reach_remote_clients() {
+        let server_rig = sim_rig();
+        let cfg = RemoteServerConfig { bind: "127.0.0.1:0".into(), password: "secret".into(), audio: false, ..Default::default() };
+        let server = RemoteServer::start(server_rig.clone(), cfg, ScopeTap::default()).unwrap();
+        let client = Rig::start();
+        let link = connect_cat(&RemoteTarget { addr: server.addr.to_string(), password: "secret".into() }).unwrap().0;
+        client.connect_link(link, EngineConfig { read_menu_on_connect: false, ..Default::default() });
+        let t0 = Instant::now();
+        while !client.link().is_open() && t0.elapsed() < Duration::from_secs(3) {
+            thread::sleep(Duration::from_millis(20));
+        }
+        let cmds: Vec<String> = client.model().caps.memory.channels().map(|c| format!("MR{c:03};")).collect();
+        let refs: Vec<&str> = cmds.iter().map(String::as_str).collect();
+        client.refresh(&refs);
+        let t0 = Instant::now();
+        while client.state().memories.len() < 2 && t0.elapsed() < Duration::from_secs(10) {
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(client.state().memories.get(&1).map(|m| m.freq), Some(7_074_000));
+        assert_eq!(client.state().memories.get(&2).map(|m| m.freq), Some(14_074_000));
+        client.shutdown();
+        server_rig.shutdown();
+    }
+
+    #[test]
     fn meters_are_pushed_to_remote_clients() {
         let server_rig = sim_rig();
         let cfg = RemoteServerConfig { bind: "127.0.0.1:0".into(), password: "secret".into(), audio: false, ..Default::default() };

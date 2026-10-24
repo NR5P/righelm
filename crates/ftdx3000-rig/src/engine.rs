@@ -1290,7 +1290,15 @@ impl Engine {
             self.shared.info("radio is answering again");
             self.shared.set_link(LinkState::Connected { description: self.description.clone() });
             self.polls.retain(|p| p.key != "ID");
+            // Re-read everything, but keep what was asked for meanwhile
+            // (e.g. the Memories tab's channel reads).
+            let asked = std::mem::take(&mut self.once);
             self.setup_polls();
+            for c in asked {
+                if !self.once.contains(&c) {
+                    self.once.push_back(c);
+                }
+            }
         }
         self.shared.record_as(&key, &frame, &state_frame);
         if solicited {
@@ -1372,6 +1380,44 @@ mod tests {
         assert_eq!(m.freq, 14_074_000);
         assert!(rig.state().memories.get(&50).is_none());
         assert_eq!(rig.read("MR099;", Freshness::Radio, Source::Gui, Duration::from_secs(2)), Err(CatError::Rejected));
+        rig.shutdown();
+    }
+
+    #[test]
+    fn reads_asked_for_while_the_radio_is_silent_survive_its_return() {
+        // A link that loses what's written to it while `mute` is set.
+        struct Muted(Box<dyn Write + Send>, Arc<AtomicBool>);
+        impl Write for Muted {
+            fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+                if self.1.load(Ordering::Relaxed) { Ok(b.len()) } else { self.0.write(b) }
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.0.flush()
+            }
+        }
+        let sim = SimRadio::new();
+        let mute = Arc::new(AtomicBool::new(false));
+        let l = sim.link();
+        let rig = Rig::start();
+        let link = Link { writer: Box::new(Muted(l.writer, mute.clone())), ..l };
+        rig.connect_link(link, EngineConfig { read_menu_on_connect: false, read_timeout_ms: 100, ..Default::default() });
+        rig.read("FA;", Freshness::Radio, Source::Gui, Duration::from_secs(2)).unwrap();
+        mute.store(true, Ordering::Relaxed);
+        let t0 = Instant::now();
+        while !matches!(rig.link(), LinkState::NoResponse { .. }) && t0.elapsed() < Duration::from_secs(5) {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(matches!(rig.link(), LinkState::NoResponse { .. }));
+        // The Memories tab asks while the radio is silent...
+        rig.refresh(&["MR001;", "MR002;"]);
+        thread::sleep(Duration::from_millis(100));
+        mute.store(false, Ordering::Relaxed);
+        // ...and gets its channels once the radio answers again.
+        let t0 = Instant::now();
+        while rig.state().memories.len() < 2 && t0.elapsed() < Duration::from_secs(10) {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(rig.state().memories.len(), 2);
         rig.shutdown();
     }
 

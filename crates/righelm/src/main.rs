@@ -215,6 +215,9 @@ impl App {
     /// no frame is drawn at all).
     fn logic(&mut self, ctx: &egui::Context) {
         self.services.tick();
+        if !self.rig().link().is_open() {
+            self.memories.link_down();
+        }
         // Push-to-talk held but no window has seen the space bar lately (they
         // stopped drawing — covered or minimized): let go of the transmitter.
         if self.space_keyed && self.space_seen.elapsed() > PTT_STALE {
