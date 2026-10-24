@@ -119,6 +119,41 @@ fn probe_link(link: &mut Link, wait: Duration) -> Option<String> {
     })
 }
 
+/// Which Elecraft radio answered `ID017;`: a K4 knows `K4;`; the others
+/// tell themselves apart in their `OM;` option string (KX3 `..02`, KX2
+/// `..01` at the end; anything else is a K3).
+fn elecraft_model(link: &mut Link, wait: Duration) -> Option<&'static RadioModel> {
+    let ask = |link: &mut Link, cmd: &[u8], prefix: &'static str| -> Option<String> {
+        link.writer.write_all(cmd).ok()?;
+        link.writer.flush().ok()?;
+        read_until(link, wait, |got| {
+            let text = String::from_utf8_lossy(got);
+            if text.contains("?;") {
+                return Some(String::new());
+            }
+            let pos = text.find(prefix)?;
+            let end = text[pos..].find(';')?;
+            Some(text[pos..pos + end].to_string())
+        })
+        .filter(|a| !a.is_empty())
+    };
+    let by = |key: &str| ftdx3000_cat::model::by_key(key);
+    if ask(link, b"K4;", "K4").is_some() {
+        return by("k4");
+    }
+    let om = ask(link, b"OM;", "OM")?;
+    let opts = om.strip_prefix("OM").unwrap_or(&om).trim_start_matches(' ');
+    if opts.as_bytes().get(8) == Some(&b'4') {
+        by("k4")
+    } else if opts.ends_with("02") {
+        by("kx3")
+    } else if opts.ends_with("01") {
+        by("kx2")
+    } else {
+        by("k3")
+    }
+}
+
 /// Ask CI-V address `to` (0 = any radio) for its address, and return the
 /// address that answered.
 fn probe_civ(link: &mut Link, to: u8, wait: Duration) -> Option<u8> {
@@ -236,7 +271,11 @@ pub fn probe(s: &SerialSettings, want: Option<&'static RadioModel>, mut on_try: 
                 let wait = Duration::from_millis(400);
                 let found = match ask {
                     Ask::Text => probe_link(&mut link, wait).map(|id| {
-                        let model = model_for_id(&id, want);
+                        let mut model = model_for_id(&id, want);
+                        // K3, K3S, KX3, KX2 and K4 all answer as a TS-570.
+                        if id == "ID017;" && !want.is_some_and(|w| w.id == "017") {
+                            model = elecraft_model(&mut link, wait).or(model);
+                        }
                         ProbeResult { baud, flow, id_answer: id, model, civ_addr: None }
                     }),
                     Ask::CiV => {
