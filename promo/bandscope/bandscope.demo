@@ -1,0 +1,72 @@
+# RigHelm band scope video: 40 m, live from the RTL-SDR on RX OUT.
+# Played by `RIGHELM_DEMO=bandscope.demo righelm` (see record.sh).
+# <seconds> <action> ...; negative times set the scene during the warm-up.
+
+warmup 24
+-20 cat FA07180000;MD01;
+
+# Title.
+0    card title "RigHelm" "Band Scope" "A live, clickable panadapter for the Yaesu FTDX3000" 4.4
+0    move at:1500:300 0.1
+
+# The whole band.
+4.6  caption "The whole band, live" "An RTL-SDR dongle on the radio's RX OUT jack. No drivers, no extra software." 6.2
+5.0  move freq:6900000 2.4
+7.6  move freq:7450000 2.6
+
+# Zoom in and click a phone station.
+10.4 move span:200k 0.9
+11.4 click
+11.8 caption "Hover finds the signal" "It marks the station and shows exactly where a click will tune." 5.0
+12.4 move voice:-75000:-6000 1.5
+16.4 click
+16.9 caption "Click, and you're on it" "SSB lands right on the suppressed carrier." 4.4
+18.6 move voice:6000:75000 1.3
+21.0 click
+
+# CW: one-click zero-beat.
+22.4 move mode:CW 1.0
+23.5 click
+23.8 caption "CW: one-click zero-beat" "It finds the peak to a few hertz, then fine-tunes from the audio." 8.6
+24.3 move span:Full 0.8
+25.2 click
+25.8 move freq:7030000 1.0
+26.9 click
+27.6 move span:50k 0.8
+28.5 click
+29.2 move signal:-22000:22000 1.3
+31.4 click
+32.6 keys "Ctrl + scroll: zoom" 2.6
+32.7 scroll 1 ctrl
+33.3 scroll 1 ctrl
+34.6 scroll -1 ctrl
+
+# FT8.
+35.8 move mode:DATA-U 1.0
+36.9 click
+37.2 caption "Digital modes" "Click an FT8 or FT4 signal: straight to the calling frequency." 6.6
+37.6 move span:Full 0.8
+38.5 click
+39.1 move freq:7075600 1.1
+40.4 click
+41.1 move span:25k 0.8
+42.0 click
+42.6 move freq:7075200 1.0
+
+# Calibration.
+44.8 caption "Self-calibrating" "Shortwave broadcasters sit exactly on 5 kHz channels. RigHelm measures them and corrects itself." 9.0
+45.2 move tab:Settings 1.0
+46.3 click
+47.0 move calibrate 1.0
+48.2 click
+53.0 move tab:Operate 1.0
+54.1 click
+
+# Remote, and out.
+54.4 caption "On every RigHelm on your network" "Remote computers see the same live scope. Linux and macOS." 6.4
+54.8 move span:Full 0.8
+55.7 click
+56.4 move freq:7150000 1.6
+58.3 move freq:7480000 2.4
+61.0 card end "RigHelm" "Free and open source · Linux & macOS" "github.com/NR5P/righelm" 5.2
+66.4 end

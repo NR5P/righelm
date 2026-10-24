@@ -223,8 +223,9 @@ fn scope_panel(app: &mut App, ui: &mut Ui) {
             };
             let state = if cfg.calibrated { "calibrated" } else { "not calibrated yet" };
             ui.label(format!("{now} · {state}"));
-            if ui
-                .add_enabled(status.present, egui::Button::new("Calibrate now"))
+            let calibrate = ui.add_enabled(status.present, egui::Button::new("Calibrate now"));
+            crate::demo::mark("calibrate", calibrate.rect);
+            if calibrate
                 .on_hover_text("Measures shortwave broadcast stations and time signals (WWV, CHU) in view, whose frequencies are exact, and corrects the scope to match. Takes a few seconds.")
                 .on_disabled_hover_text("Plug in the RTL-SDR dongle first.")
                 .clicked()

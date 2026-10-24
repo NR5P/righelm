@@ -3320,6 +3320,7 @@ dependencies = [
  "ftdx3000-cat",
  "ftdx3000-rig",
  "log",
+ "parking_lot 0.13.0",
  "serde",
  "toml",
 ]

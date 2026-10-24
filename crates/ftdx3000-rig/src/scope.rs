@@ -651,7 +651,7 @@ fn measure_carriers(power: &[f32], map: &Mapping, rate: f64) -> Vec<(f64, f64)> 
         let k = ((sig.peak_hz - d.start_hz) / d.bin_hz).round() as usize;
         let peak = d.db.get(k).copied().unwrap_or(-200.0);
         let around = d.db.iter().enumerate().filter(|(i, _)| i.abs_diff(k) > 3).map(|(_, v)| *v).fold(f32::MIN, f32::max);
-        if sig.snr_db > 25.0 && peak - around > 12.0 {
+        if sig.snr_db > 20.0 && peak - around > 8.0 {
             out.push((f, sig.peak_hz - f));
         }
     }
@@ -987,6 +987,9 @@ fn stream(
     // Peak-hold spectrum, decaying 10 dB a second, for answering detail
     // asks: keyed CW and the syllables of speech stay visible between beats.
     let mut smooth: Vec<f32> = Vec::new();
+    // A plain running average (about half a second) for calibrating: a
+    // broadcaster's carrier is steady, its programme averages out.
+    let mut steady: Vec<f32> = Vec::new();
     let decay = 10f32.powf(-1.0 / (SAMPLE_RATE as f32 / FFT_HOP as f32));
     // 16 ms at a time: rows come out evenly.
     let mut buf = vec![Complex32::default(); 32_768];
@@ -1015,6 +1018,8 @@ fn stream(
             analyzer.reset();
             rows.reset();
             smooth.clear();
+            steady.clear();
+            steady.clear();
         }
         let (vfo, transmitting) = {
             let s = rig.state();
@@ -1043,20 +1048,24 @@ fn stream(
         let n = source.read(&mut buf)?;
         if rows.map.is_some_and(|m| m != map) {
             smooth.clear();
+            steady.clear();
         }
         analyzer.push(&buf[..n], |power| {
             rows.push(tap, power, map, transmitting);
             if smooth.len() != power.len() {
                 smooth = power.to_vec();
+                steady = power.to_vec();
             } else {
-                for (s, p) in smooth.iter_mut().zip(power) {
+                for ((s, a), p) in smooth.iter_mut().zip(steady.iter_mut()).zip(power) {
                     *s = (*s * decay).max(*p);
+                    *a = 0.97 * *a + 0.03 * p;
                 }
             }
         });
         let auto = !cfg.calibrated && Instant::now() >= next_auto;
         if (auto || tap.calibration_wanted()) && started.elapsed() > Duration::from_secs(4) && !smooth.is_empty() && !transmitting {
-            let found = measure_carriers(&smooth, &map, SAMPLE_RATE as f64);
+            let found = measure_carriers(&steady, &map, SAMPLE_RATE as f64);
+            log::debug!("band scope carriers (Hz, error): {found:?}");
             let c = calibrate(&cfg, &found);
             log::info!("band scope calibration: {}", c.message);
             next_auto = Instant::now() + Duration::from_secs(30);

@@ -284,6 +284,9 @@ impl BandScope {
     /// Redraw the whole waterfall for a new view, from the stored rows.
     fn redraw(&mut self, ctx: &egui::Context, start: f64, col_hz: f64, floor: f32, range: f32, auto: bool) {
         let mut img = ColorImage::filled([COLS, ROWS], NO_DATA);
+        // Zoomed in a long way: old rows would be stretched into blocks, so
+        // start the waterfall afresh.
+        self.history.retain(|r| r.col_hz <= col_hz * 3.0);
         for (i, r) in self.history.iter().enumerate().take(ROWS) {
             let px = self.pixels(r, start, col_hz, floor, range, auto);
             img.pixels[i * COLS..(i + 1) * COLS].copy_from_slice(&px);
@@ -469,7 +472,9 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
             ui.label(RichText::new("BAND SCOPE").strong().size(15.0).color(AMBER));
             ui.label("Span");
             for (hz, label) in SPANS {
-                if ui.selectable_label(prefs.scope_span == hz, label).clicked() {
+                let r = ui.selectable_label(prefs.scope_span == hz, label);
+                crate::demo::mark(format!("span:{label}"), r.rect);
+                if r.clicked() {
                     prefs.scope_span = hz;
                 }
             }
@@ -512,6 +517,8 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
                 p.line_segment([Pos2::new(x_of(hz), top), Pos2::new(x_of(hz), bottom)], stroke);
             }
         };
+
+        crate::demo::scope(|| crate::demo::ScopeGeo { spec, start, span, vfo, peaks: bs.peak.clone() });
 
         // Backgrounds.
         gradient(&p, spec, Color32::from_rgb(18, 24, 38), Color32::from_rgb(6, 8, 13));

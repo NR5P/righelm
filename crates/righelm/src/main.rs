@@ -2,6 +2,7 @@
 
 mod console;
 mod cw_key;
+mod demo;
 mod memories;
 mod menu_tab;
 mod operate;
@@ -63,6 +64,8 @@ pub struct App {
     screenshots: Option<(std::path::PathBuf, Instant, usize)>,
     /// The space bar is holding the transmitter keyed (push-to-talk).
     space_keyed: bool,
+    /// Scripted demo being recorded (`RIGHELM_DEMO`).
+    demo: Option<demo::Demo>,
 }
 
 const SCREENSHOT_TABS: [(Tab, &str); 7] = [
@@ -118,6 +121,7 @@ impl App {
             scope: Default::default(),
             screenshots: std::env::var_os("FTDX3000_SCREENSHOTS").map(|d| (d.into(), Instant::now(), 0)),
             space_keyed: false,
+            demo: demo::Demo::from_env(),
         }
     }
 
@@ -192,6 +196,7 @@ impl App {
         let link = self.rig().link();
         ui.horizontal(|ui| {
             let (dot, text) = match &link {
+                LinkState::Connected { .. } if demo::active() => (GREEN, "USB · CAT 38400 bps".to_string()),
                 LinkState::Connected { description } => (GREEN, description.clone()),
                 LinkState::NoResponse { description } => (AMBER, format!("{description} — radio not answering")),
                 LinkState::Connecting(s) => (AMBER, s.clone()),
@@ -251,7 +256,9 @@ impl App {
                 (Tab::Console, "CAT console"),
                 (Tab::Settings, "Settings"),
             ] {
-                if ui.selectable_label(self.tab == tab, RichText::new(label).size(15.0)).clicked() {
+                let r = ui.selectable_label(self.tab == tab, RichText::new(label).size(15.0));
+                demo::mark(format!("tab:{label}"), r.rect);
+                if r.clicked() {
                     self.tab = tab;
                 }
             }
@@ -292,10 +299,19 @@ impl eframe::App for App {
         if self.tab != Tab::Operate {
             self.scope.pause();
         }
+        if let Some(d) = &mut self.demo {
+            d.frame(&ctx, &self.services.rig, &self.logo);
+        }
         let ctx = ui.ctx().clone();
         self.screenshot_step(&ctx);
         // Meters keep moving even when nothing else changes.
         ui.ctx().request_repaint_after(Duration::from_millis(250));
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if let Some(d) = &mut self.demo {
+            d.input(raw_input);
+        }
     }
 
     fn on_exit(&mut self) {
@@ -329,15 +345,22 @@ fn setup_style(ctx: &egui::Context) {
 
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,righelm=info,ftdx3000_rig=info")).init();
+    // A recorded demo draws as fast as it can at 1080p, without waiting for
+    // the display (it may be a headless one).
+    let demo = std::env::var_os("RIGHELM_DEMO").is_some();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("RigHelm — FTDX3000 Rig Control")
             .with_app_id("righelm")
             .with_icon(eframe::icon_data::from_png_bytes(ICON_PNG).expect("embedded icon"))
-            .with_inner_size([1280.0, 860.0])
+            .with_inner_size(if demo { [1920.0, 1080.0] } else { [1280.0, 860.0] })
             .with_min_inner_size([900.0, 600.0]),
         ..Default::default()
     };
+    let mut options = options;
+    if demo {
+        options.wgpu_options.surface.present_mode = eframe::egui_wgpu::wgpu::PresentMode::AutoNoVsync;
+    }
     eframe::run_native("RigHelm", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }
 

@@ -434,7 +434,9 @@ fn bands_and_modes(ui: &mut Ui, rig: &Rig, s: &RadioState) {
         ui.label(RichText::new("Mode").strong());
         for m in Mode::ALL {
             let on = s.mode_a == Some(m);
-            if ui.add(egui::Button::new(RichText::new(m.label()).strong()).min_size(egui::vec2(52.0, 26.0)).selected(on)).clicked() {
+            let r = ui.add(egui::Button::new(RichText::new(m.label()).strong()).min_size(egui::vec2(52.0, 26.0)).selected(on));
+            crate::demo::mark(format!("mode:{}", m.label()), r.rect);
+            if r.clicked() {
                 rig.send(set_mode_cmd(m));
             }
         }

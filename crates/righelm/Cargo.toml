@@ -12,5 +12,6 @@ env_logger = "0.11.11"
 ftdx3000-cat.workspace = true
 ftdx3000-rig.workspace = true
 log.workspace = true
+parking_lot = "0.13.0"
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.8"
