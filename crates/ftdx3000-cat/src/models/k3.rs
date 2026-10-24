@@ -55,7 +55,7 @@ fn rig(cx: &Ctx) -> Rig {
 
 /// The answer to a write of several frames is the answer to its one read:
 /// `MN012;MP;MN255;` -> `MP`, `K31;ID;` -> `ID`.
-fn answer_prefix(n: &str) -> String {
+pub(crate) fn answer_prefix(n: &str) -> String {
     let read = n.split_inclusive(';').find(|f| {
         let body = f.trim_end_matches(';');
         body.len() >= 2 && body.chars().all(|c| c.is_ascii_alphabetic() || c == '$')
@@ -66,14 +66,14 @@ fn answer_prefix(n: &str) -> String {
 // ------------------------------------------------------------- values
 
 /// Scale `v` from `a0..=a1` onto `b0..=b1`, rounded.
-fn scale(v: u32, a0: u32, a1: u32, b0: u32, b1: u32) -> u32 {
+pub(crate) fn scale(v: u32, a0: u32, a1: u32, b0: u32, b1: u32) -> u32 {
     let v = v.clamp(a0, a1);
     b0 + (((v - a0) as f32 * (b1 - b0) as f32) / (a1 - a0) as f32).round() as u32
 }
 
 /// RigHelm level `v` (0..=`hi`) as the radio's (`lo2..=hi2`), remembered so
 /// the radio's answer comes back as exactly `v`.
-fn level_down(cx: &mut Ctx, key: &str, v: u32, hi: u32, lo2: u32, hi2: u32) -> u32 {
+pub(crate) fn level_down(cx: &mut Ctx, key: &str, v: u32, hi: u32, lo2: u32, hi2: u32) -> u32 {
     let n = scale(v, 0, hi, lo2, hi2);
     if !cx.program {
         cx.remember(key, format!("{n}={}", v.min(hi)));
@@ -81,7 +81,7 @@ fn level_down(cx: &mut Ctx, key: &str, v: u32, hi: u32, lo2: u32, hi2: u32) -> u
     n
 }
 
-fn level_up(cx: &Ctx, key: &str, n: u32, hi: u32, lo2: u32, hi2: u32) -> u32 {
+pub(crate) fn level_up(cx: &Ctx, key: &str, n: u32, hi: u32, lo2: u32, hi2: u32) -> u32 {
     if let Some((a, b)) = cx.recall(key).and_then(|s| s.split_once('=')) {
         if a.parse() == Ok(n) {
             return b.parse().unwrap_or(0);
@@ -90,11 +90,11 @@ fn level_up(cx: &Ctx, key: &str, n: u32, hi: u32, lo2: u32, hi2: u32) -> u32 {
     scale(n, lo2, hi2, 0, hi)
 }
 
-fn int(s: &str) -> Option<u32> {
+pub(crate) fn int(s: &str) -> Option<u32> {
     s.trim().trim_start_matches('+').parse().ok()
 }
 
-fn memo_u32(cx: &Ctx, key: &str) -> Option<u32> {
+pub(crate) fn memo_u32(cx: &Ctx, key: &str) -> Option<u32> {
     cx.recall(key).and_then(int)
 }
 
@@ -105,7 +105,7 @@ fn rg_range(cx: &Ctx) -> (u32, u32) {
 
 /// The radio's mode (`MD`) and DATA sub-mode (`DT`) for a RigHelm mode.
 /// RTTY keeps the sub-mode last seen (AFSK A or FSK D, AFSK A at first).
-fn k3_mode(cx: &Ctx, m: Mode) -> Option<(u8, Option<u8>)> {
+pub(crate) fn k3_mode(cx: &Ctx, m: Mode) -> Option<(u8, Option<u8>)> {
     let rtty = memo_u32(cx, "rtty_dt").map_or(1, |d| d as u8);
     Some(match m {
         Mode::Lsb => (1, None),
@@ -124,7 +124,7 @@ fn k3_mode(cx: &Ctx, m: Mode) -> Option<(u8, Option<u8>)> {
 }
 
 /// RigHelm's mode for the radio's `MD` and `DT`.
-fn rh_mode(md: u8, dt: u8) -> Option<Mode> {
+pub(crate) fn rh_mode(md: u8, dt: u8) -> Option<Mode> {
     let rev = md == 9;
     Some(match md {
         1 => Mode::Lsb,
@@ -144,7 +144,7 @@ fn rh_mode(md: u8, dt: u8) -> Option<Mode> {
     })
 }
 
-fn note_dt(cx: &mut Ctx, dt: u8) {
+pub(crate) fn note_dt(cx: &mut Ctx, dt: u8) {
     cx.remember("dt", dt.to_string());
     if dt == 1 || dt == 2 {
         cx.remember("rtty_dt", dt.to_string());
@@ -152,18 +152,18 @@ fn note_dt(cx: &mut Ctx, dt: u8) {
 }
 
 /// The mode RigHelm reports from the radio's `MD` (and the last `DT`).
-fn mode_now(cx: &Ctx) -> Option<Mode> {
+pub(crate) fn mode_now(cx: &Ctx) -> Option<Mode> {
     let md = memo_u32(cx, "md")? as u8;
     rh_mode(md, memo_u32(cx, "dt").unwrap_or(0) as u8)
 }
 
-fn md_frame(m: Mode) -> String {
+pub(crate) fn md_frame(m: Mode) -> String {
     format!("MD0{};", m.code())
 }
 
 /// Filter widths, `(SH index, Hz)`: 50 Hz steps to 1 kHz, 100 Hz steps to
 /// 4 kHz. The radio sets any width in 10 Hz units (`BW`), quantized by mode.
-fn widths(class: WidthClass, _narrow: bool) -> Vec<(u8, u32)> {
+pub(crate) fn widths(class: WidthClass, _narrow: bool) -> Vec<(u8, u32)> {
     if class == WidthClass::Fixed {
         return Vec::new();
     }
@@ -172,30 +172,30 @@ fn widths(class: WidthClass, _narrow: bool) -> Vec<(u8, u32)> {
     v.into_iter().enumerate().map(|(i, hz)| (i as u8 + 1, hz)).collect()
 }
 
-fn width_index(hz: u32) -> u8 {
+pub(crate) fn width_index(hz: u32) -> u8 {
     widths(WidthClass::Ssb, false).into_iter().min_by_key(|(_, w)| w.abs_diff(hz)).map_or(1, |(i, _)| i)
 }
 
 /// S-meter: `SM` in K31 mode is 0-21 (S9 = 9, S9+20 = 13, S9+60 = 21), in
 /// K30 mode 0-15 (S9 = 6, S9+20 = 9, S9+60 = 15). In dB over S9.
-const SM_K31: [(u8, f32); 5] = [(0, -54.0), (9, 0.0), (13, 20.0), (17, 40.0), (21, 60.0)];
-const SM_K30: [(u8, f32); 5] = [(0, -54.0), (6, 0.0), (9, 20.0), (12, 40.0), (15, 60.0)];
+pub(crate) const SM_K31: [(u8, f32); 5] = [(0, -54.0), (9, 0.0), (13, 20.0), (17, 40.0), (21, 60.0)];
+pub(crate) const SM_K30: [(u8, f32); 5] = [(0, -54.0), (6, 0.0), (9, 20.0), (12, 40.0), (15, 60.0)];
 /// The K3's high-resolution S-meter `SMH`: S1 = 5, S9 = 40, S9+60 = 100,
 /// about 140 at most.
-const SMH_CAL: [(u8, f32); 5] = [(0, -54.0), (5, -48.0), (40, 0.0), (100, 60.0), (140, 84.0)];
+pub(crate) const SMH_CAL: [(u8, f32); 5] = [(0, -54.0), (5, -48.0), (40, 0.0), (100, 60.0), (140, 84.0)];
 /// A linear scale for values that are already in the unit wanted.
 
-const UNITS: [(u8, f32); 2] = [(0, 0.0), (255, 255.0)];
-const TENTHS: [(u8, f32); 2] = [(0, 0.0), (255, 25.5)];
+pub(crate) const UNITS: [(u8, f32); 2] = [(0, 0.0), (255, 255.0)];
+pub(crate) const TENTHS: [(u8, f32); 2] = [(0, 0.0), (255, 25.5)];
 
 /// RigHelm's raw meter value for `v` in the calibration's unit.
-fn meter_raw(v: f32, tenths: bool, cal: &[(u8, f32)]) -> u8 {
+pub(crate) fn meter_raw(v: f32, tenths: bool, cal: &[(u8, f32)]) -> u8 {
     let n = if tenths { (v * 10.0).round() } else { v.round() };
     rescale(n.clamp(0.0, 255.0) as u8, if tenths { &TENTHS } else { &UNITS }, cal)
 }
 
 /// The radio's RIT/XIT offset as `RO` / the K3 `IF` field: `+0120`.
-fn offset_text(off: i32) -> String {
+pub(crate) fn offset_text(off: i32) -> String {
     format!("{}{:04}", if off < 0 { '-' } else { '+' }, off.unsigned_abs().min(9999))
 }
 
@@ -243,7 +243,7 @@ fn switch_up(cx: &Ctx, sw: &str) -> Option<&'static str> {
 
 /// A menu item: the radio's MN number is `addr`, its value is 3 digits
 /// (`MP`) or 5 (`MQ`).
-const fn it(num: u16, addr: u32, group: &'static str, name: &'static str, kind: Kind) -> MenuItem {
+pub(crate) const fn it(num: u16, addr: u32, group: &'static str, name: &'static str, kind: Kind) -> MenuItem {
     MenuItem { num, addr, group, name, width: 3, kind }
 }
 
@@ -423,7 +423,7 @@ fn menu_down(cx: &mut Ctx, p: &str) -> Vec<String> {
 
 // ------------------------------------------------------------- down
 
-fn down(cx: &mut Ctx, f: &str) -> Vec<String> {
+pub(crate) fn down(cx: &mut Ctx, f: &str) -> Vec<String> {
     let Some((code, p)) = parts(f) else { return Vec::new() };
     if !cx.model.has(&code) {
         return Vec::new();
@@ -515,7 +515,7 @@ fn to_radio(cx: &mut Ctx, f: &str, code: &str, p: &str) -> Vec<String> {
             None => Vec::new(),
         },
         "AN" if read => one("AN;".into()),
-        "AN" => one(format!("AN{};", n.clamp(1, 2))),
+        "AN" => one(format!("AN{};", n.clamp(1, cx.model.caps.antennas.max(1) as u32))),
         "MS" if read => one("TM;".into()),
         "MS" => one(format!("TM{};", int(p).unwrap_or(0).min(1))),
         "SM" if read => one("SM;".into()),
@@ -736,7 +736,7 @@ fn to_program(cx: &mut Ctx, code: &str, p: &str) -> Vec<String> {
 
 // ------------------------------------------------------------- up
 
-fn up(cx: &mut Ctx, f: &str) -> Vec<String> {
+pub(crate) fn up(cx: &mut Ctx, f: &str) -> Vec<String> {
     // K2 and K3 (the meta-commands) aren't two letters.
     let meta = f.get(..2).filter(|c| matches!(*c, "K2" | "K3"));
     let Some((code, p)) = meta.map(|c| (c.to_string(), f[2..].trim_end_matches(';'))).or_else(|| parts(f)) else { return Vec::new() };
@@ -985,7 +985,7 @@ fn from_program(cx: &mut Ctx, code: &str, p: &str) -> Vec<String> {
         )],
         "NB" => vec![format!("NB0{};", p.get(..1).and_then(int).unwrap_or(0).min(1))],
         "NL" => vec![format!("NL0{:03};", p.get(..2).and_then(int).unwrap_or(0))],
-        "AN" => vec![format!("AN0{};", n.clamp(1, 2))],
+        "AN" => vec![format!("AN0{};", n.clamp(1, cx.model.caps.antennas.max(1) as u32))],
         "XF" if read => one("RF0;"),
         "BW" | "FW" if read => one("SH0;"),
         "BW" | "FW" => vec![format!("SH0{:02};", width_index(int(p.get(..4).unwrap_or(p)).unwrap_or(0) * 10))],
@@ -1078,7 +1078,7 @@ const fn band(code: u8, label: &'static str, lo: u64, hi: u64) -> Band {
 }
 
 /// `BN` band numbers 0-10 (160-6 m).
-const BANDS_160_6: &[Band] = &[
+pub(crate) const BANDS_160_6: &[Band] = &[
     band(0, "160", 1_800_000, 2_000_000),
     band(1, "80", 3_500_000, 4_000_000),
     band(2, "60", 5_250_000, 5_450_000),
@@ -1107,7 +1107,7 @@ const BANDS_80_10: &[Band] = &[
 
 /// Front-panel order: LSB/USB, CW, DATA (DATA A, AFSK A / FSK D, PSK D),
 /// AM, FM.
-const MODES: &[Mode] = &[
+pub(crate) const MODES: &[Mode] = &[
     Mode::Lsb,
     Mode::Usb,
     Mode::Cw,
