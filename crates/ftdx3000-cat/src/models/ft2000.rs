@@ -168,8 +168,9 @@ pub static FT2000: RadioModel = RadioModel {
         // No DATA MODE item: PKT is narrow like RTTY (Hamlib's widths).
         // Pointing at PKT DISPLAY OFFSET with a value it never has makes
         // RigHelm use the RTTY widths.
-        data_other: Some((72, "OTHER")),
+        data_other: None,
         data_disp: None,
+        data_psk: true,
     },
     caps: Caps {
         commands: COMMANDS,

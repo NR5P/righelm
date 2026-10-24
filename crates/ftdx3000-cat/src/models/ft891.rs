@@ -454,6 +454,7 @@ pub static FT891: RadioModel = RadioModel {
         // 08-01 DATA MODE = OTHERS, 08-03 OTHER DISP.
         data_other: Some((64, "1")),
         data_disp: Some(66),
+        data_psk: false,
     },
     caps: Caps {
         commands: COMMANDS,

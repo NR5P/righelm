@@ -138,8 +138,9 @@ pub static FT950: RadioModel = RadioModel {
         // No DATA MODE item: PKT uses the RTTY/PKT widths (page 16).
         // Pointing at PKT DISPLAY OFFSET with a value it never has makes
         // RigHelm use them.
-        data_other: Some((54, "OTHER")),
+        data_other: None,
         data_disp: None,
+        data_psk: true,
     },
     caps: Caps {
         commands: COMMANDS,

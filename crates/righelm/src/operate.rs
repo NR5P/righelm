@@ -379,7 +379,9 @@ fn vfo_line(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState, b: bool, live
             ui.label(RichText::new(m.label()).strong().size(15.0));
         }
         if let Some(band) = s.model.band_of(freq) {
-            ui.label(RichText::new(format!("{} m", band.label)).weak());
+            // "20" is metres; "70cm" says its own unit.
+            let unit = if band.label.bytes().all(|c| c.is_ascii_digit()) { " m" } else { "" };
+            ui.label(RichText::new(format!("{}{unit}", band.label)).weak());
         }
         if !b {
             if s.info_a.mem_mode != 0 {

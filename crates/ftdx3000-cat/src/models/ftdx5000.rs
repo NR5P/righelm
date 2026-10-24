@@ -343,8 +343,9 @@ pub static FTDX5000: RadioModel = RadioModel {
         // There is no DATA MODE item: PKT always uses the PSK widths (SH
         // table, and Hamlib's driver). Pointing at PKT DISP with a value it
         // never has makes RigHelm use them.
-        data_other: Some((87, "OTHER")),
+        data_other: None,
         data_disp: None,
+        data_psk: true,
     },
     caps: Caps {
         commands: COMMANDS,

@@ -321,7 +321,13 @@ impl RadioState {
     pub fn width_class(&self, mode: Mode) -> WidthClass {
         match mode {
             Mode::DataLsb | Mode::DataUsb => {
-                if self.model.roles.data_other.is_none() || self.data_is_other() { WidthClass::Ssb } else { WidthClass::Rtty }
+                if self.model.roles.data_psk {
+                    WidthClass::Rtty
+                } else if self.model.roles.data_other.is_none() || self.data_is_other() {
+                    WidthClass::Ssb
+                } else {
+                    WidthClass::Rtty
+                }
             }
             m => m.width_class(),
         }

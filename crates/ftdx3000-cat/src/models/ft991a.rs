@@ -607,6 +607,7 @@ pub static FT991A: RadioModel = RadioModel {
         cw_pitch_display: Some((59, "1")),
         data_other: Some((62, "1")),
         data_disp: Some(64),
+        data_psk: false,
     },
     caps: Caps {
         commands: COMMANDS,

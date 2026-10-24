@@ -93,6 +93,9 @@ pub struct Roles {
     pub data_other: Option<(u16, &'static str)>,
     /// OTHER DISP (SSB) item: the dial shift in DATA, in Hz.
     pub data_disp: Option<u16>,
+    /// DATA (PKT) always uses the RTTY/PSK width table, on a radio without
+    /// a DATA MODE item (FTDX5000, FT-950, FT-2000).
+    pub data_psk: bool,
 }
 
 impl Roles {
@@ -107,6 +110,7 @@ impl Roles {
         cw_pitch_display: None,
         data_other: None,
         data_disp: None,
+        data_psk: false,
     };
 }
 
@@ -318,6 +322,7 @@ pub static FTDX3000: RadioModel = RadioModel {
         cw_pitch_display: Some((64, "1")),
         data_other: Some((67, "1")),
         data_disp: Some(69),
+        data_psk: false,
     },
     caps: Caps {
         commands: ALL_COMMANDS,

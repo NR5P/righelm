@@ -129,6 +129,7 @@ const ROLES: Roles = Roles {
     cw_pitch_display: Some((66, "1")),
     data_other: Some((69, "1")),
     data_disp: Some(71),
+    data_psk: false,
 };
 
 const CAPS: Caps = Caps {
