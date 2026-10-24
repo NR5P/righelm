@@ -4,7 +4,7 @@
 //! Source: IC-7300 full manual, section 12 "SET MODE" and section 19
 //! "CONTROL COMMAND" (CI-V command table, pp. 19-3 to 19-15).
 
-use crate::dialect::icom::{self, CivSpec, item, AVERAGING, FILL, KEY_FRONT, MOD_INPUT, NOTCH_SW, OFF_ON, PERCENT, SPEED3, TBW, TONE, TOT, TX_DELAY, USB_LINE};
+use crate::dialect::icom::{self, CivSpec, MemLayout, item, AVERAGING, FILL, KEY_FRONT, MOD_INPUT, NOTCH_SW, OFF_ON, PERCENT, SPEED3, TBW, TONE, TOT, TX_DELAY, USB_LINE};
 use crate::menu::{Kind, MenuItem};
 use crate::model::{Caps, Family, Maker, Memory, Proto, RadioModel, Roles};
 use crate::types::{Band, Mode};
@@ -63,27 +63,27 @@ pub const COMMANDS: &[&str] = &[
     "PR0", "PS", "RA", "RC", "RD", "RG", "RL", "RM", "RT", "RU", "SH", "SM", "SQ", "SV", "TX", "VD", "VG", "VS", "VX", "XT",
 ];
 
-const TONE_GRP: &str = "SET > Tone Control/TBW";
-const FUNC: &str = "SET > Function";
-const CONN: &str = "SET > Connectors";
-const DISP: &str = "SET > Display";
-const TIME: &str = "SET > Time Set";
-const SCOPE: &str = "SCOPE > Scope Set";
-const AUDIO: &str = "AUDIO > Audio Scope Set";
-const KEYER: &str = "KEYER > CW-KEY SET";
-const DECODE: &str = "DECODE > RTTY Decode Set";
-const SCAN: &str = "SCAN > Scan Set";
-const VOICE: &str = "VOICE > Voice TX Set";
-const REC: &str = "RECORDER > Recorder Set";
-const NB: &str = "NB";
-const VOX: &str = "VOX/BK-IN";
+pub const TONE_GRP: &str = "SET > Tone Control/TBW";
+pub const FUNC: &str = "SET > Function";
+pub const CONN: &str = "SET > Connectors";
+pub const DISP: &str = "SET > Display";
+pub const TIME: &str = "SET > Time Set";
+pub const SCOPE: &str = "SCOPE > Scope Set";
+pub const AUDIO: &str = "AUDIO > Audio Scope Set";
+pub const KEYER: &str = "KEYER > CW-KEY SET";
+pub const DECODE: &str = "DECODE > RTTY Decode Set";
+pub const SCAN: &str = "SCAN > Scan Set";
+pub const VOICE: &str = "VOICE > Voice TX Set";
+pub const REC: &str = "RECORDER > Recorder Set";
+pub const NB: &str = "NB";
+pub const VOX: &str = "VOX/BK-IN";
 /// Front-panel settings with CI-V commands of their own.
 pub const PANEL: &str = "FUNCTION";
 
-const BAND_EDGE_BEEP: Kind = Kind::Choice(&["OFF", "ON (Default)", "ON (User)", "ON (User) & TX Limit"]);
-const KEY_VOX: Kind = Kind::Choice(&["VOX/BK-IN", "PRESET", "Memory 1", "Memory 2", "Memory 3", "Memory 4"]);
-const KEY_TUNE: Kind = Kind::Choice(&["AUTOTUNE", "PRESET", "Memory 1", "Memory 2", "Memory 3", "Memory 4"]);
-const KEY_MIC: Kind = Kind::Choice(&[
+pub const BAND_EDGE_BEEP: Kind = Kind::Choice(&["OFF", "ON (Default)", "ON (User)", "ON (User) & TX Limit"]);
+pub const KEY_VOX: Kind = Kind::Choice(&["VOX/BK-IN", "PRESET", "Memory 1", "Memory 2", "Memory 3", "Memory 4"]);
+pub const KEY_TUNE: Kind = Kind::Choice(&["AUTOTUNE", "PRESET", "Memory 1", "Memory 2", "Memory 3", "Memory 4"]);
+pub const KEY_MIC: Kind = Kind::Choice(&[
     "No function",
     "UP",
     "DOWN",
@@ -342,6 +342,9 @@ pub static SPEC: CivSpec = CivSpec {
     apf_hz: 1270.0,
     lock: true,
     memory_name_len: 10,
+    memory: MemLayout::Hf { split_copy: true },
+    main_sub: false,
+    antenna_rx: false,
     vox_delay: Some(191),
     keyer_type: Some(164),
     extra: EXTRA,
@@ -413,34 +416,34 @@ pub const MK2_COMMANDS: &[&str] = &[
     "PR0", "PS", "RA", "RC", "RD", "RG", "RL", "RM", "RT", "RU", "SH", "SM", "SQ", "SV", "TX", "VD", "VG", "VS", "VX", "XT",
 ];
 
-const MK2_TONE_RX: &str = "SET > Tone Control/TBW > RX";
-const MK2_TONE_TX: &str = "SET > Tone Control/TBW > TX";
-const MK2_FUNC: &str = "SET > Function";
-const MK2_USB_OUT: &str = "SET > Connectors > USB AF/IF Output";
-const MK2_ACC_OUT: &str = "SET > Connectors > ACC AF/IF Output";
-const MK2_LAN_OUT: &str = "SET > Connectors > LAN AF/IF Output";
-const MK2_MOD: &str = "SET > Connectors > MOD Input";
-const MK2_KEYPAD: &str = "SET > Connectors > External Keypad";
-const MK2_CIV: &str = "SET > Connectors > CI-V";
-const MK2_CONN: &str = "SET > Connectors";
-const MK2_USB_KEY: &str = "SET > Connectors > USB SEND/Keying";
-const MK2_NET: &str = "SET > Network";
-const MK2_REMOTE: &str = "SET > Network > Remote Settings";
-const MK2_DISP: &str = "SET > Display";
-const MK2_EXT_DISP: &str = "SET > Display > External Display";
-const MK2_TIME: &str = "SET > Time Set";
-const MK2_KEYER001: &str = "KEYER > EDIT/SET > 001 SET";
-const MK2_CWKEY: &str = "SET > CW-KEY Set";
-const MK2_CW_DECODE: &str = "KEYER > Decode Set";
-const MK2_RTTY001: &str = "RTTY DECODE > TX MEM > 001 SET";
-const MK2_RTTY_LOG: &str = "RTTY DECODE > Log Set";
-const MK2_REC: &str = "RECORD > Recorder Set";
-const MK2_PLAYER: &str = "RECORD > Player Set";
-const MK2_MENU_SET: &str = "MENU SET";
-const MK2_APF: &str = "APF";
+pub const MK2_TONE_RX: &str = "SET > Tone Control/TBW > RX";
+pub const MK2_TONE_TX: &str = "SET > Tone Control/TBW > TX";
+pub const MK2_FUNC: &str = "SET > Function";
+pub const MK2_USB_OUT: &str = "SET > Connectors > USB AF/IF Output";
+pub const MK2_ACC_OUT: &str = "SET > Connectors > ACC AF/IF Output";
+pub const MK2_LAN_OUT: &str = "SET > Connectors > LAN AF/IF Output";
+pub const MK2_MOD: &str = "SET > Connectors > MOD Input";
+pub const MK2_KEYPAD: &str = "SET > Connectors > External Keypad";
+pub const MK2_CIV: &str = "SET > Connectors > CI-V";
+pub const MK2_CONN: &str = "SET > Connectors";
+pub const MK2_USB_KEY: &str = "SET > Connectors > USB SEND/Keying";
+pub const MK2_NET: &str = "SET > Network";
+pub const MK2_REMOTE: &str = "SET > Network > Remote Settings";
+pub const MK2_DISP: &str = "SET > Display";
+pub const MK2_EXT_DISP: &str = "SET > Display > External Display";
+pub const MK2_TIME: &str = "SET > Time Set";
+pub const MK2_KEYER001: &str = "KEYER > EDIT/SET > 001 SET";
+pub const MK2_CWKEY: &str = "SET > CW-KEY Set";
+pub const MK2_CW_DECODE: &str = "KEYER > Decode Set";
+pub const MK2_RTTY001: &str = "RTTY DECODE > TX MEM > 001 SET";
+pub const MK2_RTTY_LOG: &str = "RTTY DECODE > Log Set";
+pub const MK2_REC: &str = "RECORD > Recorder Set";
+pub const MK2_PLAYER: &str = "RECORD > Player Set";
+pub const MK2_MENU_SET: &str = "MENU SET";
+pub const MK2_APF: &str = "APF";
 
 /// SSB TBW: the low digit 0-5 = 100, 120, 150, 200, 300, 500 Hz.
-const MK2_TBW: Kind = Kind::Coded(&[
+pub const MK2_TBW: Kind = Kind::Coded(&[
     (0, "100-2500 Hz"),
     (1, "120-2500 Hz"),
     (2, "150-2500 Hz"),
@@ -466,15 +469,15 @@ const MK2_TBW: Kind = Kind::Coded(&[
     (34, "300-2900 Hz"),
     (35, "500-2900 Hz"),
 ]);
-const MK2_KEY_VOX: Kind = Kind::Choice(&["VOX/BK-IN", "RX-ANT", "APF", "PRESET", "Memory 1", "Memory 2", "Memory 3", "Memory 4"]);
-const MK2_KEY_TUNE: Kind = Kind::Choice(&["AUTOTUNE", "RX-ANT", "APF", "PRESET", "Memory 1", "Memory 2", "Memory 3", "Memory 4"]);
-const MK2_KEY_UPDN: Kind = Kind::Choice(&["M-CH UP", "M-CH DOWN", "RX-ANT", "APF", "PRESET", "Memory 1", "Memory 2", "Memory 3", "Memory 4"]);
-const MK2_MOD_INPUT: Kind = Kind::Choice(&["MIC", "USB", "ACC", "MIC,USB", "MIC,ACC", "LAN"]);
-const MK2_USB_LINE: Kind = Kind::Choice(&["OFF", "USB (A) DTR", "USB (A) RTS", "USB (B) DTR", "USB (B) RTS"]);
-const AF_IF: Kind = Kind::Choice(&["AF", "IF"]);
-const AF_SQL: Kind = Kind::Choice(&["OFF (OPEN)", "ON"]);
-const PORT: Kind = Kind::Num { min: 1, max: 65535, step: 1, unit: "", signed: false, div: 1 };
-const MK2_DATE: Kind = Kind::Num { min: 20200101, max: 20991231, step: 1, unit: "", signed: false, div: 1 };
+pub const MK2_KEY_VOX: Kind = Kind::Choice(&["VOX/BK-IN", "RX-ANT", "APF", "PRESET", "Memory 1", "Memory 2", "Memory 3", "Memory 4"]);
+pub const MK2_KEY_TUNE: Kind = Kind::Choice(&["AUTOTUNE", "RX-ANT", "APF", "PRESET", "Memory 1", "Memory 2", "Memory 3", "Memory 4"]);
+pub const MK2_KEY_UPDN: Kind = Kind::Choice(&["M-CH UP", "M-CH DOWN", "RX-ANT", "APF", "PRESET", "Memory 1", "Memory 2", "Memory 3", "Memory 4"]);
+pub const MK2_MOD_INPUT: Kind = Kind::Choice(&["MIC", "USB", "ACC", "MIC,USB", "MIC,ACC", "LAN"]);
+pub const MK2_USB_LINE: Kind = Kind::Choice(&["OFF", "USB (A) DTR", "USB (A) RTS", "USB (B) DTR", "USB (B) RTS"]);
+pub const AF_IF: Kind = Kind::Choice(&["AF", "IF"]);
+pub const AF_SQL: Kind = Kind::Choice(&["OFF (OPEN)", "ON"]);
+pub const PORT: Kind = Kind::Num { min: 1, max: 65535, step: 1, unit: "", signed: false, div: 1 };
+pub const MK2_DATE: Kind = Kind::Num { min: 20200101, max: 20991231, step: 1, unit: "", signed: false, div: 1 };
 
 const RAW_MK2: &[MenuItem] = &[
     // The RX HPF/LPF items (00 01, 00 04, 00 07, 00 10, 00 11) are two
@@ -851,6 +854,7 @@ mod tests {
             "FA14074000;", "FB07074000;", "MD01;", "MD02;", "MD03;", "MD07;", "MD05;", "MD04;", "MD06;", "MD09;", "MD08;", "MD0C;", "MD0H;", "MD0A;",
             "AG0128;", "RG0200;", "SQ0010;", "PC050;", "MG040;", "KS022;", "PA01;", "PA02;", "NB01;", "NR01;", "RL008;", "BC01;", "PR01;", "VX1;",
             "BI1;", "RT1;", "XT0;", "SH010;", "GT01;", "GT03;", "RA01;", "RA00;", "TX1;", "TX0;", "AC001;", "LK1;", "PB01;",
+            "MW00107074000+000000C00000;", "MW10014074000+000000402000;",
         ] {
             round_trip_set(m, f);
         }
@@ -867,6 +871,8 @@ mod tests {
             ("SH0;", "SH028;"),
             ("TX;", "TX0;"),
             ("FT;", "FT1;"),
+            ("MR001;", "MR00107074000+000000C10000;"),
+            ("MR101;", "MR10114074000+000000411000;"),
         ] {
             round_trip_read(m, read, answer);
         }

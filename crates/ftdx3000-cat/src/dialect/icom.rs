@@ -70,6 +70,15 @@ pub struct CivSpec {
     pub lock: bool,
     /// Memory names in `1A 00` (characters), 0 = none.
     pub memory_name_len: usize,
+    /// How memories (`1A 00`, `08`) and band stacks (`1A 01`) are laid out.
+    pub memory: MemLayout,
+    /// RigHelm's VFO-A/B are the MAIN and SUB receivers (IC-7610): `25`/`26`
+    /// 00 is MAIN and 01 SUB whichever is selected, `07 D0`/`07 D1` select
+    /// one, `07 B1` copies MAIN to SUB and `07 B0` exchanges them.
+    pub main_sub: bool,
+    /// The antenna command carries the RX antenna on/off after the antenna
+    /// (`12 00 00`, IC-7610).
+    pub antenna_rx: bool,
     /// `VD` (VOX delay, ms) is this `1A 05` item: 00-20 = 0.0-2.0 s.
     pub vox_delay: Option<u32>,
     /// `KR` (keyer on/off) is this `1A 05` item: 00 straight key,
@@ -79,6 +88,31 @@ pub struct CivSpec {
     /// settings like IP+): the item's `addr` and the command. Their
     /// addresses are 9000 and up, so they never clash with `1A 05` items.
     pub extra: &'static [(u32, &'static [u8])],
+}
+
+/// How a radio's memory channels and band stacking registers look.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemLayout {
+    /// HF radios: channels `00 01`-`00 99` and the scan edges P1/P2 as
+    /// `01 00`/`01 01` (RigHelm's 100/101); DATA in the high nibble of the
+    /// tone byte; with `split_copy` the contents are repeated for transmit.
+    Hf { split_copy: bool },
+    /// IC-705: a group (`00 00`-`00 99`) and a channel (`00 00`-`00 99`);
+    /// RigHelm's channels 0-99 are group 0's. V/UHF contents (below).
+    Group,
+    /// IC-9700: a band (01 2 m, 02 70 cm, 03 23 cm) and a channel
+    /// (`00 01`-`00 99`); RigHelm's channel is band x 100 + channel.
+    /// V/UHF contents (below).
+    Band,
+}
+
+impl MemLayout {
+    /// V/UHF contents: DATA has a byte of its own, then duplex/tone,
+    /// digital squelch, the tones, DTCS, the DV code, the duplex offset and
+    /// the D-STAR call signs, all repeated for transmit.
+    fn vuhf(self) -> bool {
+        !matches!(self, MemLayout::Hf { .. })
+    }
 }
 
 /// A menu item of an Icom radio: `addr` is the `1A 05` item as its
@@ -469,13 +503,22 @@ struct Known {
     ai: bool,
     /// Last APF width the radio reported (`16 32`).
     apf_width: u8,
+    /// RX antenna on/off last reported with the antenna (`12 0n xx`).
+    rx_ant: u8,
+    /// VFO-A/B are MAIN/SUB (see [`CivSpec::main_sub`]).
+    main_sub: bool,
 }
 
 impl Known {
     /// Index of RigHelm's VFO-A/B (false/true) in Icom's selected (0) /
-    /// unselected (1) terms.
+    /// unselected (1) terms, or MAIN (0) / SUB (1).
     fn sel(&self, b: bool) -> u8 {
-        (b != self.vfo_b) as u8
+        if self.main_sub { b as u8 } else { (b != self.vfo_b) as u8 }
+    }
+
+    /// RigHelm's VFO (B = true) for Icom's `25`/`26` selector.
+    fn vfo_of(&self, sel: u8) -> bool {
+        if self.main_sub { sel == 1 } else { (sel == 1) != self.vfo_b }
     }
 }
 
@@ -520,7 +563,8 @@ pub struct Icom {
 
 impl Icom {
     pub fn new(model: &'static RadioModel, spec: &'static CivSpec) -> Self {
-        Self { model, spec, addr: model.civ_addr, split: CivSplitter::default(), pending: VecDeque::new(), k: Known::default() }
+        let k = Known { main_sub: spec.main_sub, ..Known::default() };
+        Self { model, spec, addr: model.civ_addr, split: CivSplitter::default(), pending: VecDeque::new(), k }
     }
 
     /// Talk to another address than the model's default (the radio's CI-V
@@ -634,9 +678,10 @@ impl Icom {
                 let Some(n) = num(p) else { return Vec::new() };
                 let b = if code == "FR" { n >= 4 } else { n == 1 };
                 self.k.vfo_b = b;
-                vec![self.set(vec![0x07, b as u8])]
+                let sub = if self.spec.main_sub { 0xD0 + b as u8 } else { b as u8 };
+                vec![self.set(vec![0x07, sub])]
             }
-            ("AB", false) => vec![self.set(vec![0x07, 0xA0])],
+            ("AB", false) => vec![self.set(vec![0x07, if self.spec.main_sub { 0xB1 } else { 0xA0 }])],
             ("SV", false) => {
                 self.k.freq.swap(0, 1);
                 self.k.mode.swap(0, 1);
@@ -698,7 +743,11 @@ impl Icom {
             ("AN", true) if self.spec.antenna_switch => vec![self.read(vec![0x12])],
             ("AN", false) if self.spec.antenna_switch => {
                 let Some(a) = p.get(1..2).and_then(|c| c.parse::<u8>().ok()).filter(|a| (1..=2).contains(a)) else { return Vec::new() };
-                vec![self.set(vec![0x12, a - 1])]
+                let mut body = vec![0x12, a - 1];
+                if self.spec.antenna_rx {
+                    body.push(self.k.rx_ant);
+                }
+                vec![self.set(body)]
             }
             ("CO", true) if self.spec.apf && p == "00" => vec![self.msg(vec![0x16, 0x32], Want::As("CO00"), true)],
             ("CO", true) if self.spec.apf && p == "02" => vec![self.msg(vec![0x14, 0x05], Want::As("CO02"), true)],
@@ -726,28 +775,27 @@ impl Icom {
                 vec![self.rit(hz)]
             }
             ("RC", false) => vec![self.rit(0)],
-            ("MC", true) => vec![Out::Answer(format!("MC{:03};", self.k.memory_channel.max(1)))],
+            ("MC", true) => vec![Out::Answer(format!("MC{:03};", self.k.memory_channel.max(self.model.caps.memory.first)))],
             ("MC", false) => {
                 let Some(ch) = num(p).filter(|c| self.model.caps.memory.channels().contains(&(*c as u16))) else { return Vec::new() };
                 self.k.memory_channel = ch as u16;
-                let mut body = vec![0x08];
-                body.extend(mem_bytes(ch as u16));
-                vec![self.set(body)]
+                mem_select(self.spec, ch as u16).into_iter().map(|b| self.set(b)).collect()
             }
             ("MA", false) => vec![self.set(vec![0x0A])],
             ("AM", false) => vec![self.set(vec![0x09])],
             ("MR", true) => {
-                let Some(ch) = num(p) else { return Vec::new() };
+                let Some(addr) = num(p).and_then(|ch| mem_addr(self.spec, ch as u16)) else { return Vec::new() };
                 let mut body = vec![0x1A, 0x00];
-                body.extend(mem_bytes(ch as u16));
-                vec![self.msg(body, Want::Memory(ch as u16), true)]
+                body.extend(addr);
+                vec![self.msg(body, Want::Memory(num(p).unwrap_or(0) as u16), true)]
             }
             ("MW", false) => {
                 let Some(info) = ChannelInfo::parse(p) else { return Vec::new() };
                 let Some(m) = info.mode.and_then(|m| self.mode_bytes(m, None)) else { return Vec::new() };
+                let Some(addr) = mem_addr(self.spec, info.channel) else { return Vec::new() };
                 let mut body = vec![0x1A, 0x00];
-                body.extend(mem_bytes(info.channel));
-                body.extend(memory_body(&info, m, self.spec));
+                body.extend(addr);
+                body.extend(memory_contents(self.spec, &info, m));
                 vec![self.set(body)]
             }
             ("KM", true) => {
@@ -878,13 +926,13 @@ impl Icom {
             }
             0x25 => {
                 let (Some(&sel), Some(hz)) = (d.first(), d.get(1..).and_then(freq_from)) else { return Vec::new() };
-                let b = (sel == 1) != self.k.vfo_b;
+                let b = self.k.vfo_of(sel);
                 self.k.freq[b as usize] = Some(hz);
                 freq_frames(&self.k, b)
             }
             0x26 => {
                 let (Some(&sel), Some(&mode)) = (d.first(), d.get(1)) else { return Vec::new() };
-                let b = (sel == 1) != self.k.vfo_b;
+                let b = self.k.vfo_of(sel);
                 let m = IcomMode { mode, data: d.get(2).is_some_and(|x| *x != 0), filter: d.get(3).copied().unwrap_or(1) };
                 self.k.mode[b as usize] = Some(m);
                 self.mode_frames(b)
@@ -901,6 +949,9 @@ impl Icom {
             }
             0x12 if self.spec.antenna_switch => {
                 let Some(&a) = d.first() else { return Vec::new() };
+                if let Some(&rx) = d.get(1) {
+                    self.k.rx_ant = rx;
+                }
                 vec![format!("AN0{}0;", a + 1)]
             }
             0x15 => {
@@ -1072,31 +1123,117 @@ fn menu_data(item: &crate::menu::MenuItem, raw: &str) -> Option<Vec<u8>> {
     }
 }
 
-/// A memory channel number as `1A 00`/`08` want it (`00 05`; P1/P2 =
-/// `01 00`/`01 01` are RigHelm's 100/101).
-fn mem_bytes(ch: u16) -> Vec<u8> {
-    match ch {
-        100 => vec![0x01, 0x00],
-        101 => vec![0x01, 0x01],
-        c => bcd(c as u64, 2),
+/// A RigHelm memory channel as the address `1A 00` wants (see
+/// [`MemLayout`]), or none if the radio has no such channel.
+fn mem_addr(spec: &CivSpec, ch: u16) -> Option<Vec<u8>> {
+    match spec.memory {
+        MemLayout::Hf { .. } => match ch {
+            1..=99 => Some(bcd(ch as u64, 2)),
+            100 => Some(vec![0x01, 0x00]),
+            101 => Some(vec![0x01, 0x01]),
+            _ => None,
+        },
+        MemLayout::Group => (ch <= 99).then(|| [vec![0x00, 0x00], bcd(ch as u64, 2)].concat()),
+        MemLayout::Band => {
+            let (band, c) = (ch / 100, ch % 100);
+            ((1..=3).contains(&band) && (1..=99).contains(&c)).then(|| [bcd(band as u64, 1), bcd(c as u64, 2)].concat())
+        }
     }
 }
 
-/// The contents of a memory channel for `1A 00` (after the channel).
-fn memory_body(info: &ChannelInfo, m: IcomMode, spec: &CivSpec) -> Vec<u8> {
-    let mut v = vec![0x00];
-    v.extend(freq_bytes(info.freq));
+/// The memory address at the start of `d` as a RigHelm channel, and its
+/// length.
+fn mem_ch_from(spec: &CivSpec, d: &[u8]) -> Option<(u16, usize)> {
+    match spec.memory {
+        MemLayout::Hf { .. } => {
+            let b = d.get(..2)?;
+            Some((if b[0] == 0x01 { 100 + (b[1] as u16 & 1) } else { from_bcd(b)? as u16 }, 2))
+        }
+        MemLayout::Group => {
+            let b = d.get(..4)?;
+            (from_bcd(&b[..2])? == 0).then_some(())?;
+            Some((from_bcd(&b[2..])? as u16, 4))
+        }
+        MemLayout::Band => {
+            let b = d.get(..3)?;
+            Some((from_bcd(&b[..1])? as u16 * 100 + from_bcd(&b[1..])? as u16, 3))
+        }
+    }
+}
+
+/// The commands that select a memory channel (`08`).
+fn mem_select(spec: &CivSpec, ch: u16) -> Vec<Vec<u8>> {
+    match spec.memory {
+        MemLayout::Hf { .. } => mem_addr(spec, ch).map(|a| vec![[vec![0x08], a].concat()]).unwrap_or_default(),
+        // Group 0 first, then the channel in it.
+        MemLayout::Group => vec![vec![0x08, 0xA0, 0x00, 0x00], [vec![0x08], bcd(ch as u64, 2)].concat()],
+        // A channel of the band the MAIN band is on.
+        MemLayout::Band => vec![[vec![0x08], bcd((ch % 100) as u64, 2)].concat()],
+    }
+}
+
+/// RigHelm's CTCSS setting (`ChannelInfo::ctcss`: 1 encode/decode, 2
+/// encode) as Icom's tone type (1 TONE, 2 TSQL), and back.
+fn tone_to_icom(ctcss: u8) -> u8 {
+    match ctcss {
+        1 => 2,
+        2 => 1,
+        _ => 0,
+    }
+}
+
+fn tone_from_icom(t: u8) -> u8 {
+    match t & 0x0F {
+        1 => 2,
+        2 => 1,
+        _ => 0,
+    }
+}
+
+/// One copy of a memory's (or band stack's) contents from the frequency
+/// on.
+fn mem_block(spec: &CivSpec, hz: u64, m: IcomMode, ctcss: u8) -> Vec<u8> {
+    let mut v = freq_bytes(hz);
     v.push(m.mode);
     v.push(m.filter.max(1));
-    v.push((m.data as u8) << 4 | info.ctcss.min(2));
-    // Repeater tone and tone squelch: 88.5 Hz.
-    v.extend([0x00, 0x08, 0x85, 0x00, 0x08, 0x85]);
-    // The same again for transmit (split).
-    let first = v[1..].to_vec();
-    v.extend(&first[..first.len()]);
-    if spec.memory_name_len > 0 {
-        v.extend(std::iter::repeat_n(b' ', spec.memory_name_len));
+    let tone = tone_to_icom(ctcss);
+    if spec.memory.vuhf() {
+        v.extend([m.data as u8, tone, 0x00]);
+        // Repeater tone and tone squelch 88.5 Hz, DTCS 023, DV code 00,
+        // no duplex offset.
+        v.extend([0x00, 0x08, 0x85, 0x00, 0x08, 0x85, 0x00, 0x00, 0x23, 0x00, 0x00, 0x00, 0x00]);
+        v.extend(b"CQCQCQ                  ");
+    } else {
+        v.push((m.data as u8) << 4 | tone);
+        v.extend([0x00, 0x08, 0x85, 0x00, 0x08, 0x85]);
     }
+    v
+}
+
+/// Frequency, mode and RigHelm's CTCSS setting of a memory block.
+fn parse_block(spec: &CivSpec, d: &[u8]) -> Option<(u64, IcomMode, u8)> {
+    let hz = freq_from(d)?;
+    let mode = *d.get(5)?;
+    let filter = d.get(6).copied().unwrap_or(1);
+    let (data, tone) = if spec.memory.vuhf() {
+        (d.get(7).is_some_and(|x| *x != 0), d.get(8).copied().unwrap_or(0))
+    } else {
+        let x = d.get(7).copied().unwrap_or(0);
+        (x >> 4 != 0, x & 0x0F)
+    };
+    Some((hz, IcomMode { mode, data, filter }, tone_from_icom(tone)))
+}
+
+/// The contents of a memory channel for `1A 00` (after the channel).
+fn memory_contents(spec: &CivSpec, info: &ChannelInfo, m: IcomMode) -> Vec<u8> {
+    let block = mem_block(spec, info.freq, m, info.ctcss);
+    let mut v = vec![0x00];
+    v.extend(&block);
+    // The same again for transmit (split).
+    if matches!(spec.memory, MemLayout::Hf { split_copy: true }) || spec.memory.vuhf() {
+        v.extend(&block);
+    }
+    v.extend(std::iter::repeat_n(b' ', spec.memory_name_len));
     v
 }
 
@@ -1149,12 +1286,9 @@ impl Dialect for Icom {
                 match &p.want {
                     Want::BandStack => {
                         // 1A 01 <band> <reg> <frequency 5> <mode> <filter> <data/tone> ...
-                        let d = &body[4.min(body.len())..];
-                        if let (Some(hz), Some(&mode)) = (freq_from(d), d.get(5)) {
-                            let filter = d.get(6).copied().unwrap_or(1);
-                            let data = d.get(7).is_some_and(|x| x >> 4 != 0);
+                        if let Some((hz, m, _)) = parse_block(self.spec, &body[4.min(body.len())..]) {
                             let mut b = Back::reply(Vec::new());
-                            b.then = vec![self.tune(false, hz), self.set_mode(false, IcomMode { mode, data, filter })];
+                            b.then = vec![self.tune(false, hz), self.set_mode(false, m)];
                             return b;
                         }
                         frames.push("?;".into());
@@ -1189,16 +1323,14 @@ impl Dialect for Icom {
 
 impl Icom {
     fn memory_answer(&self, ch: u16, body: &[u8]) -> Vec<String> {
-        // 1A 00 <ch 2> <split/select> <frequency 5> <mode> <filter> <data/tone> ...
-        let d = &body[3.min(body.len())..];
-        if d.first() == Some(&0xFF) || d.len() < 9 {
+        // 1A 00 <channel> <split/select> <frequency 5> <mode> <filter> ...
+        let Some((_, n)) = body.get(2..).and_then(|d| mem_ch_from(self.spec, d)) else { return vec!["?;".into()] };
+        let d = &body[(2 + n).min(body.len())..];
+        if d.first() == Some(&0xFF) {
             return vec!["?;".into()];
         }
-        let (Some(hz), Some(&mode)) = (freq_from(&d[1..]), d.get(6)) else { return vec!["?;".into()] };
-        let filter = d.get(7).copied().unwrap_or(1);
-        let dt = d.get(8).copied().unwrap_or(0);
-        let m = IcomMode { mode, data: dt >> 4 != 0, filter };
-        let info = ChannelInfo { channel: ch, freq: hz, mode: self.mode_of(m), mem_mode: 1, ctcss: dt & 0x0F, ..Default::default() };
+        let Some((hz, m, ctcss)) = d.get(1..).and_then(|b| parse_block(self.spec, b)) else { return vec!["?;".into()] };
+        let info = ChannelInfo { channel: ch, freq: hz, mode: self.mode_of(m), mem_mode: 1, ctcss, ..Default::default() };
         vec![info.to_answer("MR")]
     }
 }
@@ -1237,7 +1369,7 @@ impl IcomEmulator {
     }
 
     fn vfo(&self, sel: u8) -> bool {
-        (sel == 1) != self.vfo_b
+        if self.spec.main_sub { sel == 1 } else { (sel == 1) != self.vfo_b }
     }
 
     fn icom_mode(&self, m: Mode) -> Option<(u8, bool)> {
@@ -1320,12 +1452,21 @@ impl Emulator for IcomEmulator {
                 return ok(req, self);
             }
             0x07 => match d.first() {
-                Some(&v @ (0x00 | 0x01)) => {
+                Some(&v @ (0x00 | 0x01)) if !self.spec.main_sub => {
                     self.vfo_b = v == 1;
                     req.sets.push(format!("VS{v};"));
                     return ok(req, self);
                 }
-                Some(0xA0) => {
+                Some(&v @ (0xD0 | 0xD1)) if self.spec.main_sub => {
+                    self.vfo_b = v == 0xD1;
+                    req.sets.push(format!("VS{};", self.vfo_b as u8));
+                    return ok(req, self);
+                }
+                Some(0xB1) if self.spec.main_sub => {
+                    req.sets.push("AB;".into());
+                    return ok(req, self);
+                }
+                Some(0xA0) if !self.spec.main_sub => {
                     req.sets.push("AB;".into());
                     return ok(req, self);
                 }
@@ -1334,8 +1475,8 @@ impl Emulator for IcomEmulator {
                     return ok(req, self);
                 }
                 Some(0xD2) => {
-                    // Main/sub: always main.
-                    req.immediate = Some(self.reply(&[0x07, 0xD2, 0x00]));
+                    // MAIN or SUB selected.
+                    req.immediate = Some(self.reply(&[0x07, 0xD2, (self.spec.main_sub && self.vfo_b) as u8]));
                 }
                 None => return ok(req, self),
                 _ => return ng,
@@ -1416,10 +1557,11 @@ impl Emulator for IcomEmulator {
                     req.reads.push("AN0;".into());
                     req.tag = "ant".into();
                 }
-                Some(&a) => {
+                Some(&a) if a <= 1 => {
                     req.sets.push(format!("AN0{};", a + 1));
                     return ok(req, self);
                 }
+                Some(_) => return ng,
             },
             0x17 => return ok(req, self),
             0x28 => match d.get(1) {
@@ -1429,13 +1571,24 @@ impl Emulator for IcomEmulator {
                 }
                 _ => return ng,
             },
-            0x08 => match d.get(..2).and_then(|b| from_bcd(b)) {
-                Some(ch) => {
-                    req.sets.push(format!("MC{:03};", if d[0] == 0x01 { 100 + (d[1] as u64 & 1) } else { ch }));
-                    return ok(req, self);
+            0x08 => {
+                // Group select (IC-705: only group 0 is RigHelm's).
+                if d.first() == Some(&0xA0) {
+                    return if d.get(1..3) == Some(&[0x00, 0x00][..]) || d.len() == 1 { ok(req, self) } else { ng };
                 }
-                None => return ok(req, self),
-            },
+                let ch = match self.spec.memory {
+                    MemLayout::Hf { .. } => mem_ch_from(self.spec, d).map(|x| x.0),
+                    MemLayout::Group => d.get(..2).and_then(from_bcd).map(|c| c as u16),
+                    MemLayout::Band => d.get(..2).and_then(from_bcd).map(|c| 100 + c as u16),
+                };
+                match ch {
+                    Some(ch) => {
+                        req.sets.push(format!("MC{ch:03};"));
+                        return ok(req, self);
+                    }
+                    None => return ok(req, self),
+                }
+            }
             0x09 => {
                 req.sets.push("AM;".into());
                 return ok(req, self);
@@ -1529,21 +1682,19 @@ impl Emulator for IcomEmulator {
                     _ => return ng,
                 },
                 Some(0x00) => {
-                    let Some(chb) = d.get(1..3) else { return ng };
-                    let ch = if chb[0] == 0x01 { 100 + (chb[1] as u16 & 1) } else { from_bcd(chb).unwrap_or(0) as u16 };
-                    if d.len() == 3 {
+                    let Some((ch, n)) = mem_ch_from(self.spec, &d[1..]) else { return ng };
+                    if d.len() == 1 + n {
                         req.reads.push(format!("MR{ch:03};"));
                         req.tag = "mem".into();
                     } else {
-                        // <split/select> <frequency 5> <mode> <filter> <data/tone> ...
-                        let m = &d[3..];
+                        // <split/select> <frequency 5> <mode> <filter> ...
+                        let m = &d[1 + n..];
                         if m.first() == Some(&0xFF) {
                             return ok(req, self);
                         }
-                        let (Some(hz), Some(&mode)) = (m.get(1..).and_then(freq_from), m.get(6)) else { return ng };
-                        let data = m.get(8).is_some_and(|x| x >> 4 != 0);
-                        let Some(md) = self.canon_mode(mode, data) else { return ng };
-                        let info = ChannelInfo { channel: ch, freq: hz, mode: Some(md), ..Default::default() };
+                        let Some((hz, im, ctcss)) = m.get(1..).and_then(|b| parse_block(self.spec, b)) else { return ng };
+                        let Some(md) = self.canon_mode(im.mode, im.data) else { return ng };
+                        let info = ChannelInfo { channel: ch, freq: hz, mode: Some(md), ctcss, ..Default::default() };
                         req.sets.push(info.to_mw(ch));
                         return ok(req, self);
                     }
@@ -1608,8 +1759,7 @@ impl Emulator for IcomEmulator {
             let hz = super::num::<u64>(p).unwrap_or(0);
             let m = answers.get(1).cloned().flatten().and_then(|md| md.get(3..4).and_then(|c| Mode::from_code(c.chars().next()?)));
             let (mode, data) = m.and_then(|m| self.icom_mode(m)).unwrap_or((0x01, false));
-            body.extend(freq_bytes(hz));
-            body.extend([mode, 0x01, (data as u8) << 4, 0x00, 0x08, 0x85, 0x00, 0x08, 0x85]);
+            body.extend(mem_block(self.spec, hz, IcomMode { mode, data, filter: 1 }, 0));
             return self.reply(&body);
         }
         match tag {
@@ -1654,7 +1804,12 @@ impl Emulator for IcomEmulator {
                 body.extend(bcd(apf_to_radio(self.spec, v), 2));
             }
             "lock" => body.push(p.parse::<u8>().unwrap_or(4) & 1),
-            "ant" => body.push(p.get(1..2).and_then(|c| c.parse::<u8>().ok()).unwrap_or(1).saturating_sub(1)),
+            "ant" => {
+                body.push(p.get(1..2).and_then(|c| c.parse::<u8>().ok()).unwrap_or(1).saturating_sub(1));
+                if self.spec.antenna_rx {
+                    body.push(0x00);
+                }
+            }
             "keyer" => {
                 let text = p.get(1..).unwrap_or("").split('}').next().unwrap_or("").trim_end();
                 body.extend(if text.is_empty() { b" ".to_vec() } else { text.as_bytes().to_vec() });
@@ -1663,7 +1818,7 @@ impl Emulator for IcomEmulator {
                 let Some(info) = ChannelInfo::parse(p) else { return self.ng() };
                 let Some(m) = info.mode else { return self.ng() };
                 let Some((mode, data)) = self.icom_mode(m) else { return self.ng() };
-                body.extend(memory_body(&info, IcomMode { mode, data, filter: 1 }, self.spec));
+                body.extend(memory_contents(self.spec, &info, IcomMode { mode, data, filter: 1 }));
             }
             "agc" => body.push(p.get(1..2).and_then(|c| c.parse::<u8>().ok()).unwrap_or(2).clamp(1, 3)),
             "ptt" => body.push((p != "0") as u8),
