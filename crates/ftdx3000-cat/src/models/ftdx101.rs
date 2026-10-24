@@ -782,6 +782,7 @@ const ROLES: Roles = Roles {
     // PSK is a mode of its own; DATA always uses the SSB widths.
     data_other: None,
     data_disp: None,
+    data_psk: false,
 };
 
 /// Simulator answers where the FTDX3000's defaults don't fit.

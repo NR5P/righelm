@@ -104,11 +104,10 @@ pub static FT710: RadioModel = RadioModel {
         ],
         cw_bfo: None,
         cw_pitch_display: Some((112, "1")),
-        // DATA-L/U use the CW/PSK widths (Table 3), as RigHelm does for a
-        // DATA MODE that isn't OTHER; the FT-710 has no such item, so this
-        // names one whose value is never "OTHER".
-        data_other: Some((75, "OTHER")),
+        data_other: None,
         data_disp: None,
+        // DATA-L/U use the CW/PSK widths (Table 3).
+        data_psk: true,
     },
     caps: Caps {
         commands: COMMANDS,

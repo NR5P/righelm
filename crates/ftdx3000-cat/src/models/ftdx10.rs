@@ -116,6 +116,7 @@ pub static FTDX10: RadioModel = RadioModel {
         cw_pitch_display: Some((114, "1")),
         data_other: None,
         data_disp: None,
+        data_psk: false,
     },
     caps: Caps {
         commands: COMMANDS,
