@@ -10,7 +10,9 @@ use ftdx3000_rig::hamlib_check::{SimPort, available, rigctl};
 /// Run `cmds`, fail on any rigctl error, and return the output.
 fn run(m: &'static RadioModel, port: &SimPort, cmds: &[&str]) -> String {
     let out = rigctl(m, port, cmds).unwrap();
-    assert!(!out.contains("RPRT -") && !out.to_lowercase().contains("error"), "{}: {cmds:?}\n{out}\n--- heard: {}", m.key, port.heard_text());
+    // (rigctl's "error = ..." lines also come with successes.)
+    let failed = ["RPRT -", "Command rejected", "timed out", "Invalid parameter", "Protocol error", "not implemented"].iter().any(|e| out.contains(e));
+    assert!(!failed, "{}: {cmds:?}\n{out}\n--- heard: {}", m.key, port.heard_text());
     out
 }
 
