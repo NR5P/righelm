@@ -60,6 +60,12 @@ pub struct CivSpec {
     pub antenna_switch: bool,
     /// APF with `16 32` and `14 05`.
     pub apf: bool,
+    /// `16 32` has widths (01 WIDE, 02 MID, 03 NAR) instead of just ON;
+    /// RigHelm's APF ON uses the last one the radio reported.
+    pub apf_widths: bool,
+    /// The APF frequency offset at `14 05 02 55` (and minus it at 00 00),
+    /// in Hz.
+    pub apf_hz: f32,
     /// Lock with `16 50`.
     pub lock: bool,
     /// Memory names in `1A 00` (characters), 0 = none.
@@ -461,6 +467,8 @@ struct Known {
     keyer: [Option<String>; 8],
     memory_channel: u16,
     ai: bool,
+    /// Last APF width the radio reported (`16 32`).
+    apf_width: u8,
 }
 
 impl Known {
@@ -697,10 +705,10 @@ impl Icom {
             ("CO", false) if self.spec.apf => {
                 let (Some(which), Some(v)) = (p.get(..2), p.get(2..).and_then(num)) else { return Vec::new() };
                 match which {
-                    "00" if v == 0 || v == 2 => vec![self.set(vec![0x16, 0x32, if v == 2 { 1 } else { 0 }])],
+                    "00" if v == 0 || v == 2 => vec![self.set(vec![0x16, 0x32, if v == 2 { self.k.apf_width.max(1) } else { 0 }])],
                     "02" => {
                         let mut body = vec![0x14, 0x05];
-                        body.extend(bcd((128 + (v - 25) * 1).clamp(0, 255) as u64, 2));
+                        body.extend(bcd(apf_to_radio(self.spec, v), 2));
                         vec![self.set(body)]
                     }
                     _ => Vec::new(),
@@ -910,13 +918,18 @@ impl Icom {
             }
             0x16 => match (d.first(), d.get(1)) {
                 (Some(0x12), Some(&v)) => vec![format!("GT0{v};")],
-                (Some(0x32), Some(&v)) => vec![format!("CO00{:02};", if v != 0 { 2 } else { 0 })],
+                (Some(0x32), Some(&v)) => {
+                    if v != 0 && self.spec.apf_widths {
+                        self.k.apf_width = v;
+                    }
+                    vec![format!("CO00{:02};", if v != 0 { 2 } else { 0 })]
+                }
                 (Some(0x50), Some(&v)) => vec![format!("LK{};", 4 + (v & 1))],
                 _ => Vec::new(),
             },
             0x14 if d.first() == Some(&0x05) => {
                 let Some(v) = d.get(1..3).and_then(from_bcd) else { return Vec::new() };
-                vec![format!("CO02{:02};", (v as i64 - 128 + 25).clamp(0, 50))]
+                vec![format!("CO02{:02};", apf_from_radio(self.spec, v))]
             }
             0x19 => {
                 let addr = d.get(1).copied().unwrap_or(self.addr);
@@ -1010,6 +1023,17 @@ impl Icom {
             Compose::Oi => info(true).map(|i| vec![i.to_answer("OI")]).unwrap_or_default(),
         }
     }
+}
+
+/// RigHelm's APF frequency (`CO02`: 0-50 = -250..+250 Hz) as `14 05`.
+fn apf_to_radio(spec: &CivSpec, v: i64) -> u64 {
+    let hz = (v.clamp(0, 50) - 25) as f32 * 10.0;
+    (128.0 + hz * 127.0 / spec.apf_hz).round().clamp(0.0, 255.0) as u64
+}
+
+fn apf_from_radio(spec: &CivSpec, n: u64) -> i64 {
+    let hz = (n as f32 - 128.0) * spec.apf_hz / 127.0;
+    ((hz / 10.0).round() as i64 + 25).clamp(0, 50)
 }
 
 /// The command that reads a menu item (and, with the value after it, sets
@@ -1383,7 +1407,7 @@ impl Emulator for IcomEmulator {
                     req.tag = "apff".into();
                 }
                 Some(v) => {
-                    req.sets.push(format!("CO02{:02};", (v as i64 - 128 + 25).clamp(0, 50)));
+                    req.sets.push(format!("CO02{:02};", apf_from_radio(self.spec, v)));
                     return ok(req, self);
                 }
             },
@@ -1624,10 +1648,10 @@ impl Emulator for IcomEmulator {
                 let v: u8 = a.get(3..a.len() - 1).and_then(|x| x.parse().ok()).unwrap_or(0);
                 body.extend(bcd(meter_from_canon(self.spec, sub, v) as u64, 2));
             }
-            "apf" => body.push((p.get(..2) == Some("02")) as u8),
+            "apf" => body.push((p.get(2..4) == Some("02")) as u8),
             "apff" => {
                 let v: i64 = p.get(2..).and_then(super::num).unwrap_or(25);
-                body.extend(bcd((128 + v - 25).clamp(0, 255) as u64, 2));
+                body.extend(bcd(apf_to_radio(self.spec, v), 2));
             }
             "lock" => body.push(p.parse::<u8>().unwrap_or(4) & 1),
             "ant" => body.push(p.get(1..2).and_then(|c| c.parse::<u8>().ok()).unwrap_or(1).saturating_sub(1)),
@@ -1700,6 +1724,7 @@ impl Emulator for IcomEmulator {
 #[cfg(test)]
 pub mod testing {
     use super::*;
+    pub use crate::dialect::{Dialect, Emulator};
     use crate::model::Proto;
 
     /// `"FE FE 94 E0 03 FD"` as bytes.
@@ -1800,7 +1825,6 @@ pub mod testing {
 mod tests {
     use super::testing::*;
     use super::*;
-    use crate::models::ic7300::IC7300;
 
     #[test]
     fn frames_and_bcd() {
@@ -1812,105 +1836,5 @@ mod tests {
         assert_eq!(bcd_text(&[0x02, 0x55]), "0255");
         let mut s = CivSplitter::default();
         assert_eq!(s.split(&hex("FE FE FE FE 94 E0 03 FD FE FE")), vec![hex("FE FE 94 E0 03 FD")]);
-    }
-
-    #[test]
-    fn ic7300_literal_frames() {
-        let mut r = radio(&IC7300);
-        assert_eq!(down(&mut r, "FA14074000;"), ["FE FE 94 E0 25 00 00 40 07 14 00 FD"]);
-        assert!(up(&mut r, "FE FE E0 94 FB FD").is_empty());
-        assert_eq!(down(&mut r, "FB;"), ["FE FE 94 E0 25 01 FD"]);
-        assert_eq!(up(&mut r, "FE FE E0 94 25 01 00 60 07 14 00 FD"), ["FB14076000;"]);
-        assert_eq!(down(&mut r, "MD0C;"), ["FE FE 94 E0 26 00 01 01 01 FD"]);
-        up(&mut r, "FE FE E0 94 FB FD");
-        assert_eq!(down(&mut r, "MD0;"), ["FE FE 94 E0 26 00 FD"]);
-        assert_eq!(up(&mut r, "FE FE E0 94 26 00 03 00 02 FD"), ["MD03;"]);
-        assert_eq!(down(&mut r, "AG0128;"), ["FE FE 94 E0 14 01 01 28 FD"]);
-        up(&mut r, "FE FE E0 94 FB FD");
-        // 50 W of 100: 01 28 (half of 02 55).
-        assert_eq!(down(&mut r, "PC050;"), ["FE FE 94 E0 14 0A 01 28 FD"]);
-        up(&mut r, "FE FE E0 94 FB FD");
-        // S9 = 01 20 on the IC-7300, 130 on RigHelm's scale.
-        assert_eq!(down(&mut r, "SM0;"), ["FE FE 94 E0 15 02 FD"]);
-        assert_eq!(up(&mut r, "FE FE E0 94 15 02 01 20 FD"), ["SM0130;"]);
-        assert_eq!(down(&mut r, "RA01;"), ["FE FE 94 E0 11 20 FD"]);
-        up(&mut r, "FE FE E0 94 FB FD");
-        assert_eq!(down(&mut r, "TX1;"), ["FE FE 94 E0 1C 00 01 FD"]);
-        up(&mut r, "FE FE E0 94 FB FD");
-        assert_eq!(down(&mut r, "BS05;"), ["FE FE 94 E0 1A 01 05 01 FD"]);
-        // A refusal is "?;".
-        assert_eq!(up(&mut r, "FE FE E0 94 FA FD"), ["?;"]);
-        // CI-V Transceive broadcast of the frequency.
-        assert_eq!(up(&mut r, "FE FE 00 94 00 00 40 07 07 00 FD"), ["FA07074000;"]);
-    }
-
-    #[test]
-    fn ic7300_menu_vox_delay_keyer_and_extras() {
-        let m = &IC7300;
-        let mut r = radio(m);
-        let n = num_of(m.menu, 71);
-        assert_eq!(down(&mut r, &format!("EX{n:03};")), ["FE FE 94 E0 1A 05 00 71 FD"]);
-        assert_eq!(up(&mut r, "FE FE E0 94 1A 05 00 71 01 FD"), [format!("EX{n:03}01;")]);
-        let beep = num_of(m.menu, 21);
-        assert_eq!(down(&mut r, &format!("EX{beep:03}0128;")), ["FE FE 94 E0 1A 05 00 21 01 28 FD"]);
-        up(&mut r, "FE FE E0 94 FB FD");
-        let call = num_of(m.menu, 91);
-        assert_eq!(down(&mut r, &format!("EX{call:03}W1AW      ;")), ["FE FE 94 E0 1A 05 00 91 57 31 41 57 FD"]);
-        up(&mut r, "FE FE E0 94 FB FD");
-        let ipp = num_of(m.menu, 9001);
-        assert_eq!(down(&mut r, &format!("EX{ipp:03}01;")), ["FE FE 94 E0 1A 07 01 FD"]);
-        up(&mut r, "FE FE E0 94 FB FD");
-        assert_eq!(down(&mut r, &format!("EX{ipp:03};")), ["FE FE 94 E0 1A 07 FD"]);
-        assert_eq!(up(&mut r, "FE FE E0 94 1A 07 01 FD"), [format!("EX{ipp:03}01;")]);
-        assert_eq!(down(&mut r, "VD0500;"), ["FE FE 94 E0 1A 05 01 91 05 FD"]);
-        up(&mut r, "FE FE E0 94 FB FD");
-        assert_eq!(down(&mut r, "VD;"), ["FE FE 94 E0 1A 05 01 91 FD"]);
-        assert_eq!(up(&mut r, "FE FE E0 94 1A 05 01 91 05 FD"), ["VD0500;"]);
-        assert_eq!(down(&mut r, "KR1;"), ["FE FE 94 E0 1A 05 01 64 02 FD"]);
-        up(&mut r, "FE FE E0 94 FB FD");
-        assert_eq!(down(&mut r, "KR;"), ["FE FE 94 E0 1A 05 01 64 FD"]);
-        assert_eq!(up(&mut r, "FE FE E0 94 1A 05 01 64 01 FD"), ["KR1;"]);
-    }
-
-    #[test]
-    fn ic7300_emulator_literal_frames() {
-        let mut e = emulator(&IC7300);
-        let req = e.request(&hex("FE FE 94 E0 25 00 FD"));
-        assert_eq!(req.reads, ["FA;"]);
-        assert_eq!(e.respond(&req, &[Some("FA07074000;".into())]), hex("FE FE E0 94 25 00 00 40 07 07 00 FD"));
-        let req = e.request(&hex("FE FE 94 E0 26 00 01 01 02 FD"));
-        assert_eq!(req.sets, ["MD0C;"]);
-        let req = e.request(&hex("FE FE 94 E0 1A 05 00 71 00 FD"));
-        assert_eq!(req.sets, [format!("EX{:03}00;", num_of(IC7300.menu, 71))]);
-        let req = e.request(&hex("FE FE 94 E0 19 00 FD"));
-        assert_eq!(req.immediate, Some(hex("FE FE E0 94 19 00 94 FD")));
-    }
-
-    #[test]
-    fn ic7300_round_trips() {
-        let m = &IC7300;
-        for f in [
-            "FA14074000;", "FB07074000;", "MD01;", "MD02;", "MD03;", "MD07;", "MD05;", "MD04;", "MD06;", "MD09;", "MD08;", "MD0C;", "MD0H;", "MD0A;",
-            "AG0128;", "RG0200;", "SQ0010;", "PC050;", "MG040;", "KS022;", "PA01;", "PA02;", "NB01;", "NR01;", "RL008;", "BC01;", "PR01;", "VX1;",
-            "BI1;", "RT1;", "XT0;", "SH010;", "GT01;", "GT03;", "RA01;", "RA00;", "TX1;", "TX0;", "AC001;", "CO0002;", "CO0230;", "LK1;", "PB01;",
-        ] {
-            round_trip_set(m, f);
-        }
-        menu_round_trips(m);
-        for (read, answer) in [
-            ("FA;", "FA14074000;"),
-            ("FB;", "FB14076000;"),
-            ("MD0;", "MD0C;"),
-            ("AG0;", "AG0128;"),
-            ("PC;", "PC050;"),
-            ("KS;", "KS022;"),
-            ("GT0;", "GT02;"),
-            ("RA0;", "RA01;"),
-            ("SH0;", "SH028;"),
-            ("TX;", "TX0;"),
-            ("FT;", "FT1;"),
-        ] {
-            round_trip_read(m, read, answer);
-        }
     }
 }
