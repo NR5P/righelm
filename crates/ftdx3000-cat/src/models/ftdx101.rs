@@ -105,7 +105,7 @@ pub(super) fn chan_down(n: u16) -> String {
     match n {
         100..=117 => {
             let k = n - 100;
-            format!("P{}{}", k / 2 + 1, if k % 2 == 0 { 'L' } else { 'U' })
+            format!("P{}{}", k / 2 + 1, if k.is_multiple_of(2) { 'L' } else { 'U' })
         }
         118 => "EMG".into(),
         n => format!("{n:03}"),
