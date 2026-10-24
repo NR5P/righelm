@@ -68,7 +68,7 @@ pub const MODE_LIST: &[Mode] = &[
 
 /// RigHelm commands the IC-7610 carries out.
 pub const COMMANDS: &[&str] = &[
-    "AB", "AC", "AG", "AI", "AM", "AN", "BA", "BC", "BD", "BI", "BP00", "BS", "BU", "BY", "CO00", "CO02", "EX", "FA", "FB", "FR", "FT", "GT", "ID",
+    "AB", "AC", "AG", "AI", "AM", "AN", "BA", "BC", "BD", "BI", "BP00", "BS", "BU", "BY", "CN", "CO00", "CO02", "CT", "EX", "FA", "FB", "FR", "FT", "GT", "ID",
     "IF", "KM", "KP", "KR", "KS", "KY", "LK", "MA", "MC", "MD", "MG", "ML0", "ML1", "MR", "MW", "MX", "NB", "NL", "NR", "OI", "PA", "PB", "PC",
     "PL", "PR0", "PS", "RA", "RC", "RD", "RG", "RL", "RM", "RT", "RU", "SH", "SM", "SQ", "SV", "TX", "VD", "VG", "VS", "VX", "XT",
 ];
@@ -451,6 +451,9 @@ pub static SPEC: CivSpec = CivSpec {
     memory: MemLayout::Hf { split_copy: false },
     main_sub: true,
     antenna_rx: true,
+    dual_band: false,
+    tone_function: false,
+    duplex: false,
     vox_delay: Some(292),
     keyer_type: Some(231),
     extra: EXTRA,

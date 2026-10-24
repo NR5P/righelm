@@ -70,8 +70,8 @@ pub const MODE_LIST: &[Mode] = &[
 
 /// RigHelm commands the IC-705 carries out (no APF, no IP+).
 pub const COMMANDS: &[&str] = &[
-    "AB", "AC", "AG", "AI", "AM", "BA", "BC", "BD", "BI", "BP00", "BS", "BU", "BY", "EX", "FA", "FB", "FR", "FT", "GT", "ID", "IF", "KM", "KP",
-    "KR", "KS", "KY", "LK", "MA", "MC", "MD", "MG", "ML0", "ML1", "MR", "MW", "MX", "NB", "NL", "NR", "OI", "PA", "PB", "PC", "PL", "PR0", "PS", "RA", "RC", "RD", "RG", "RL",
+    "AB", "AC", "AG", "AI", "AM", "BA", "BC", "BD", "BI", "BP00", "BS", "BU", "BY", "CN", "CT", "EX", "FA", "FB", "FR", "FT", "GT", "ID", "IF", "KM", "KP",
+    "KR", "KS", "KY", "LK", "MA", "MC", "MD", "MG", "ML0", "ML1", "MR", "MW", "MX", "NB", "NL", "NR", "OI", "OS", "PA", "PB", "PC", "PL", "PR0", "PS", "RA", "RC", "RD", "RG", "RL",
     "RM", "RT", "RU", "SH", "SM", "SQ", "SV", "TX", "VD", "VG", "VS", "VX", "XT",
 ];
 
@@ -538,6 +538,9 @@ pub static SPEC: CivSpec = CivSpec {
     memory: MemLayout::Group,
     main_sub: false,
     antenna_rx: false,
+    dual_band: false,
+    tone_function: true,
+    duplex: true,
     vox_delay: Some(359),
     keyer_type: Some(255),
     extra: EXTRA,
@@ -646,15 +649,33 @@ mod tests {
     }
 
     #[test]
+    fn ic705_tones_and_duplex() {
+        let m = &IC705;
+        let mut r = radio(m);
+        assert_eq!(down(&mut r, "CT01;"), ["FE FE A4 E0 16 5D 02 FD"]);
+        up(&mut r, "FE FE E0 A4 FB FD");
+        assert_eq!(down(&mut r, "CT0;"), ["FE FE A4 E0 16 5D FD"]);
+        assert_eq!(up(&mut r, "FE FE E0 A4 16 5D 01 FD"), ["CT02;"]);
+        assert_eq!(down(&mut r, "OS02;"), ["FE FE A4 E0 0F 11 FD"]);
+        up(&mut r, "FE FE E0 A4 FB FD");
+        assert_eq!(down(&mut r, "OS0;"), ["FE FE A4 E0 0F FD"]);
+        assert_eq!(up(&mut r, "FE FE E0 A4 0F 12 FD"), ["OS01;"]);
+        // Duplex is not split.
+        assert_eq!(down(&mut r, "FT;"), ["FE FE A4 E0 0F FD"]);
+        assert_eq!(up(&mut r, "FE FE E0 A4 0F 11 FD"), ["FT0;"]);
+        // (A program's 16 5D is the menu item "Tone Squelch Function".)
+        for f in ["OS00;", "OS01;", "OS02;"] {
+            round_trip_set(m, f);
+        }
+    }
+
+    #[test]
     fn ic705_round_trips() {
         let m = &IC705;
         for f in [
             "FA145500000;", "FB433500000;", "FA07074000;", "MD0F;", "MD0G;", "MD0C;", "MD0A;", "MD04;", "PC005;", "PC010;", "PA01;", "RA01;",
-            "MW00514074000+000000C00000;", "MW09914574000+000000402000;", "MC005;",
+            "MW00514074000+000000C00000;", "MW09914574000+000000402000;",
         ] {
-            if f.starts_with("MC") {
-                continue;
-            }
             round_trip_set(m, f);
         }
         menu_round_trips(m);

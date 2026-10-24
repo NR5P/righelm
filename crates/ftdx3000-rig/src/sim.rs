@@ -123,11 +123,16 @@ impl SimCore {
             2,
             ChannelInfo { channel: 2, freq: 14_074_000, mode: Some(Mode::DataUsb), mem_mode: 1, ..Default::default() },
         );
+        // A radio without 20 m (VHF/UHF only) starts on its first band.
+        let (freq_a, freq_b) = match model.bands.iter().find(|b| b.label != "GEN") {
+            Some(b) if !model.in_range(14_074_000) => (b.lo + 100_000, b.lo + 102_000),
+            _ => (14_074_000, 14_076_000),
+        };
         Self {
             model,
             answers,
-            freq_a: 14_074_000,
-            freq_b: 14_076_000,
+            freq_a,
+            freq_b,
             mode_a: Mode::Usb,
             mode_b: Mode::Usb,
             power_on: true,
@@ -266,7 +271,8 @@ impl SimCore {
         match code {
             _ if !self.model.has(code) => return false,
             "FA" | "FB" => {
-                if !(p.len() == 8 || p.len() == 9 && self.model.freq_max > 99_999_999) || !digits(p) {
+                let digits_ok = p.len() == 8 || p.len() == 9 && self.model.freq_max > 99_999_999 || p.len() == 10 && self.model.freq_max > 999_999_999;
+                if !digits_ok || !digits(p) {
                     return false;
                 }
                 let f: u64 = p.parse().unwrap();

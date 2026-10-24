@@ -79,6 +79,17 @@ pub struct CivSpec {
     /// The antenna command carries the RX antenna on/off after the antenna
     /// (`12 00 00`, IC-7610).
     pub antenna_rx: bool,
+    /// The radio has MAIN and SUB bands besides VFO A/B (IC-9700). RigHelm
+    /// keeps to MAIN's VFO A/B; a program that selects SUB (`07 D1`) is
+    /// shown VFO-B, MAIN (`07 D0`) VFO-A.
+    pub dual_band: bool,
+    /// `CT` (CTCSS off / encode+decode / encode) is the tone squelch
+    /// function `16 5D` (00 OFF, 01 TONE, 02 TSQL, ...); otherwise it is
+    /// the repeater tone `16 42` and tone squelch `16 43` switches.
+    pub tone_function: bool,
+    /// `OS` (repeater shift) is the duplex setting `0F 10`/`0F 11`/`0F 12`
+    /// (simplex, DUP-, DUP+).
+    pub duplex: bool,
     /// `VD` (VOX delay, ms) is this `1A 05` item: 00-20 = 0.0-2.0 s.
     pub vox_delay: Option<u32>,
     /// `KR` (keyer on/off) is this `1A 05` item: 00 straight key,
@@ -507,6 +518,9 @@ struct Known {
     rx_ant: u8,
     /// VFO-A/B are MAIN/SUB (see [`CivSpec::main_sub`]).
     main_sub: bool,
+    /// Repeater tone (`16 42`) and tone squelch (`16 43`) are on.
+    rpt_tone: bool,
+    tsql: bool,
 }
 
 impl Known {
@@ -543,6 +557,8 @@ enum Want {
 enum Compose {
     If,
     Oi,
+    /// `CT0` from the repeater tone and tone squelch switches.
+    Ct,
 }
 
 struct Pend {
@@ -856,6 +872,36 @@ impl Icom {
                 body.push(if p == "0" { 0x00 } else { 0x02 });
                 vec![self.set(body)]
             }
+            ("CN", true) => vec![self.msg(vec![0x1B, 0x00], Want::As("CN"), true)],
+            ("CN", false) => {
+                let Some(&dhz) = p.get(1..).and_then(num).and_then(|n: i64| types::CTCSS_DHZ.get(n as usize)) else { return Vec::new() };
+                // RigHelm has one tone: the repeater tone and the tone squelch.
+                let tone = bcd(dhz as u64, 3);
+                vec![self.set([vec![0x1B, 0x00], tone.clone()].concat()), self.set([vec![0x1B, 0x01], tone].concat())]
+            }
+            ("CT", true) if self.spec.tone_function => vec![self.msg(vec![0x16, 0x5D], Want::As("CT"), true)],
+            ("CT", true) => vec![self.msg(vec![0x16, 0x42], Want::Data, false), self.msg(vec![0x16, 0x43], Want::Compose(Compose::Ct), true)],
+            ("CT", false) => {
+                let Some(n) = p.get(1..2).and_then(|c| c.parse::<u8>().ok()).filter(|n| *n <= 2) else { return Vec::new() };
+                if self.spec.tone_function {
+                    return vec![self.set(vec![0x16, 0x5D, [0, 2, 1][n as usize]])];
+                }
+                // Off first, then on (the radio keeps only one on).
+                self.k.rpt_tone = n == 2;
+                self.k.tsql = n == 1;
+                match n {
+                    1 => vec![self.set(vec![0x16, 0x42, 0x00]), self.set(vec![0x16, 0x43, 0x01])],
+                    2 => vec![self.set(vec![0x16, 0x43, 0x00]), self.set(vec![0x16, 0x42, 0x01])],
+                    _ => vec![self.set(vec![0x16, 0x43, 0x00]), self.set(vec![0x16, 0x42, 0x00])],
+                }
+            }
+            ("OS", true) if self.spec.duplex => vec![self.msg(vec![0x0F], Want::As("OS"), true)],
+            ("OS", false) if self.spec.duplex => match p.get(1..2) {
+                Some("0") => vec![self.set(vec![0x0F, 0x10])],
+                Some("1") => vec![self.set(vec![0x0F, 0x12])],
+                Some("2") => vec![self.set(vec![0x0F, 0x11])],
+                _ => Vec::new(),
+            },
             ("BS", false) => {
                 let Some(band) = num(p).filter(|b| self.model.bands.iter().any(|x| x.code as i64 == *b)) else { return Vec::new() };
                 vec![self.msg(vec![0x1A, 0x01, bcd(band as u64, 1)[0], 0x01], Want::BandStack, true)]
@@ -892,6 +938,24 @@ impl Icom {
     fn up(&mut self, body: &[u8], want: Option<&Want>) -> Vec<String> {
         let Some(&cmd) = body.first() else { return Vec::new() };
         let d = &body[1..];
+        // RigHelm reads whose answer is also a menu item's.
+        match (want, body) {
+            (Some(Want::As("CT")), [0x16, 0x5D, v, ..]) => {
+                return vec![format!("CT0{};", match v {
+                    0x00 => 0,
+                    0x01 | 0x06 => 2,
+                    _ => 1,
+                })];
+            }
+            (Some(Want::As("OS")), [0x0F, v, ..]) => {
+                return vec![format!("OS0{};", match v {
+                    0x12 => 1,
+                    0x11 => 2,
+                    _ => 0,
+                })];
+            }
+            _ => {}
+        }
         // Menu items that are commands of their own.
         if let Some((item, n)) = extra_item(self.model, self.spec, body) {
             return if body.len() > n { vec![format!("EX{:03}{};", item.num, menu_raw(item, &body[n..]))] } else { Vec::new() };
@@ -937,8 +1001,15 @@ impl Icom {
                 self.k.mode[b as usize] = Some(m);
                 self.mode_frames(b)
             }
+            0x1B if d.len() >= 4 => {
+                // Tone frequencies: the nearest of RigHelm's tones.
+                let Some(dhz) = from_bcd(&d[1..4]) else { return Vec::new() };
+                let n = types::CTCSS_DHZ.iter().enumerate().min_by_key(|(_, t)| (**t as i64 - dhz as i64).abs()).map_or(0, |x| x.0);
+                if d[0] == 0x00 { vec![format!("CN0{n:02};")] } else { Vec::new() }
+            }
             0x0F => {
                 let Some(&on) = d.first() else { return Vec::new() };
+                // 10-12 (simplex, DUP-, DUP+) are not split either.
                 self.k.split = on == 1;
                 vec![format!("FT{};", (self.k.split != self.k.vfo_b) as u8)]
             }
@@ -976,6 +1047,14 @@ impl Icom {
                     vec![format!("CO00{:02};", if v != 0 { 2 } else { 0 })]
                 }
                 (Some(0x50), Some(&v)) => vec![format!("LK{};", 4 + (v & 1))],
+                (Some(0x42), Some(&v)) => {
+                    self.k.rpt_tone = v != 0;
+                    Vec::new()
+                }
+                (Some(0x43), Some(&v)) => {
+                    self.k.tsql = v != 0;
+                    Vec::new()
+                }
                 _ => Vec::new(),
             },
             0x14 if d.first() == Some(&0x05) => {
@@ -1072,6 +1151,7 @@ impl Icom {
         match c {
             Compose::If => info(false).map(|i| vec![i.to_answer("IF")]).unwrap_or_default(),
             Compose::Oi => info(true).map(|i| vec![i.to_answer("OI")]).unwrap_or_default(),
+            Compose::Ct => vec![format!("CT0{};", if self.k.tsql { 1 } else if self.k.rpt_tone { 2 } else { 0 })],
         }
     }
 }
@@ -1457,7 +1537,7 @@ impl Emulator for IcomEmulator {
                     req.sets.push(format!("VS{v};"));
                     return ok(req, self);
                 }
-                Some(&v @ (0xD0 | 0xD1)) if self.spec.main_sub => {
+                Some(&v @ (0xD0 | 0xD1)) if self.spec.main_sub || self.spec.dual_band => {
                     self.vfo_b = v == 0xD1;
                     req.sets.push(format!("VS{};", self.vfo_b as u8));
                     return ok(req, self);
@@ -1476,7 +1556,7 @@ impl Emulator for IcomEmulator {
                 }
                 Some(0xD2) => {
                     // MAIN or SUB selected.
-                    req.immediate = Some(self.reply(&[0x07, 0xD2, (self.spec.main_sub && self.vfo_b) as u8]));
+                    req.immediate = Some(self.reply(&[0x07, 0xD2, ((self.spec.main_sub || self.spec.dual_band) && self.vfo_b) as u8]));
                 }
                 None => return ok(req, self),
                 _ => return ng,
@@ -1485,6 +1565,10 @@ impl Emulator for IcomEmulator {
                 None => {
                     req.reads.push("FT;".into());
                     req.tag = "split".into();
+                }
+                Some(&v @ (0x10 | 0x11 | 0x12)) if self.spec.duplex => {
+                    req.sets.push(format!("OS0{};", [0, 2, 1][(v - 0x10) as usize]));
+                    return ok(req, self);
                 }
                 Some(&on) => {
                     let tx_b = (on == 1) != self.vfo_b;
@@ -1532,6 +1616,19 @@ impl Emulator for IcomEmulator {
                     req.sets.push(format!("CO00{:02};", if v != 0 { 2 } else { 0 }));
                     return ok(req, self);
                 }
+                (Some(&sub @ (0x42 | 0x43)), None) if !self.spec.tone_function => {
+                    req.reads.push("CT0;".into());
+                    req.tag = format!("ct{sub}");
+                }
+                (Some(&sub @ (0x42 | 0x43)), Some(&v)) if !self.spec.tone_function => {
+                    let ct = match (sub, v != 0) {
+                        (0x42, true) => 2,
+                        (0x43, true) => 1,
+                        _ => 0,
+                    };
+                    req.sets.push(format!("CT0{ct};"));
+                    return ok(req, self);
+                }
                 (Some(0x50), None) if self.spec.lock => {
                     req.reads.push("LK;".into());
                     req.tag = "lock".into();
@@ -1562,6 +1659,17 @@ impl Emulator for IcomEmulator {
                     return ok(req, self);
                 }
                 Some(_) => return ng,
+            },
+            0x1B if matches!(d.first(), Some(0x00 | 0x01)) => match d.get(1..4).and_then(from_bcd) {
+                None => {
+                    req.reads.push("CN0;".into());
+                    req.tag = "tone".into();
+                }
+                Some(dhz) => {
+                    let n = types::CTCSS_DHZ.iter().enumerate().min_by_key(|(_, t)| (**t as i64 - dhz as i64).abs()).map_or(0, |x| x.0);
+                    req.sets.push(format!("CN0{n:02};"));
+                    return ok(req, self);
+                }
             },
             0x17 => return ok(req, self),
             0x28 => match d.get(1) {
@@ -1804,6 +1912,12 @@ impl Emulator for IcomEmulator {
                 body.extend(bcd(apf_to_radio(self.spec, v), 2));
             }
             "lock" => body.push(p.parse::<u8>().unwrap_or(4) & 1),
+            "tone" => {
+                let n: usize = p.get(1..).and_then(super::num).unwrap_or(8);
+                body.extend(bcd(*types::CTCSS_DHZ.get(n).unwrap_or(&885) as u64, 3));
+            }
+            "ct66" => body.push((p.get(1..2) == Some("2")) as u8),
+            "ct67" => body.push((p.get(1..2) == Some("1")) as u8),
             "ant" => {
                 body.push(p.get(1..2).and_then(|c| c.parse::<u8>().ok()).unwrap_or(1).saturating_sub(1));
                 if self.spec.antenna_rx {

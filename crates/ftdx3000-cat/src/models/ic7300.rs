@@ -58,7 +58,7 @@ pub const HF_MODE_LIST: &[Mode] = &[
 
 /// RigHelm commands an Icom HF radio carries out.
 pub const COMMANDS: &[&str] = &[
-    "AB", "AC", "AG", "AI", "AM", "BA", "BC", "BD", "BI", "BP00", "BS", "BU", "BY", "EX", "FA", "FB", "FR", "FT", "GT", "ID", "IF",
+    "AB", "AC", "AG", "AI", "AM", "BA", "BC", "BD", "BI", "BP00", "BS", "BU", "BY", "CN", "CT", "EX", "FA", "FB", "FR", "FT", "GT", "ID", "IF",
     "KM", "KP", "KR", "KS", "KY", "LK", "MA", "MC", "MD", "MG", "ML0", "ML1", "MR", "MW", "MX", "NB", "NL", "NR", "OI", "PA", "PB", "PC", "PL",
     "PR0", "PS", "RA", "RC", "RD", "RG", "RL", "RM", "RT", "RU", "SH", "SM", "SQ", "SV", "TX", "VD", "VG", "VS", "VX", "XT",
 ];
@@ -345,6 +345,9 @@ pub static SPEC: CivSpec = CivSpec {
     memory: MemLayout::Hf { split_copy: true },
     main_sub: false,
     antenna_rx: false,
+    dual_band: false,
+    tone_function: false,
+    duplex: false,
     vox_delay: Some(191),
     keyer_type: Some(164),
     extra: EXTRA,
@@ -411,7 +414,7 @@ pub static IC7300: RadioModel = RadioModel {
 
 /// RigHelm commands the IC-7300MK2 carries out (the IC-7300's and APF).
 pub const MK2_COMMANDS: &[&str] = &[
-    "AB", "AC", "AG", "AI", "AM", "BA", "BC", "BD", "BI", "BP00", "BS", "BU", "BY", "CO00", "CO02", "EX", "FA", "FB", "FR", "FT", "GT", "ID", "IF",
+    "AB", "AC", "AG", "AI", "AM", "BA", "BC", "BD", "BI", "BP00", "BS", "BU", "BY", "CN", "CO00", "CO02", "CT", "EX", "FA", "FB", "FR", "FT", "GT", "ID", "IF",
     "KM", "KP", "KR", "KS", "KY", "LK", "MA", "MC", "MD", "MG", "ML0", "ML1", "MR", "MW", "MX", "NB", "NL", "NR", "OI", "PA", "PB", "PC", "PL",
     "PR0", "PS", "RA", "RC", "RD", "RG", "RL", "RM", "RT", "RU", "SH", "SM", "SQ", "SV", "TX", "VD", "VG", "VS", "VX", "XT",
 ];
@@ -875,6 +878,27 @@ mod tests {
             ("MR101;", "MR10114074000+000000411000;"),
         ] {
             round_trip_read(m, read, answer);
+        }
+    }
+
+    #[test]
+    fn ic7300_ctcss() {
+        let mut r = radio(&IC7300);
+        // Tone 08 = 88.5 Hz, for the repeater tone and the tone squelch.
+        assert_eq!(down(&mut r, "CN008;"), ["FE FE 94 E0 1B 00 00 08 85 FD", "FE FE 94 E0 1B 01 00 08 85 FD"]);
+        up(&mut r, "FE FE E0 94 FB FD");
+        up(&mut r, "FE FE E0 94 FB FD");
+        assert_eq!(down(&mut r, "CN0;"), ["FE FE 94 E0 1B 00 FD"]);
+        assert_eq!(up(&mut r, "FE FE E0 94 1B 00 00 10 00 FD"), ["CN012;"]);
+        // Encode only: tone squelch off, repeater tone on.
+        assert_eq!(down(&mut r, "CT02;"), ["FE FE 94 E0 16 43 00 FD", "FE FE 94 E0 16 42 01 FD"]);
+        up(&mut r, "FE FE E0 94 FB FD");
+        up(&mut r, "FE FE E0 94 FB FD");
+        assert_eq!(down(&mut r, "CT0;"), ["FE FE 94 E0 16 42 FD", "FE FE 94 E0 16 43 FD"]);
+        assert!(up(&mut r, "FE FE E0 94 16 42 00 FD").is_empty());
+        assert_eq!(up(&mut r, "FE FE E0 94 16 43 01 FD"), ["CT01;"]);
+        for (read, answer) in [("CN0;", "CN012;"), ("CT0;", "CT02;"), ("CT0;", "CT01;"), ("CT0;", "CT00;")] {
+            round_trip_read(&IC7300, read, answer);
         }
     }
 

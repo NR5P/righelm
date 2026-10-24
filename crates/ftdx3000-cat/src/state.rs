@@ -34,8 +34,9 @@ impl ChannelInfo {
         if p.len() < 24 || !p.is_ascii() {
             return None;
         }
-        // The clarifier sign follows the frequency.
-        let f = if matches!(&p[11..12], "+" | "-") { 8 } else { 9 };
+        // The clarifier sign follows the frequency (8 digits, 9 above
+        // 99.999999 MHz, 10 above 999.999999 MHz).
+        let f = (8..=10).find(|f| matches!(p.get(3 + f..4 + f), Some("+" | "-"))).unwrap_or(9);
         if p.len() < 16 + f {
             return None;
         }
@@ -514,6 +515,11 @@ mod tests {
         let info = ChannelInfo::parse(&IF_FRAME[2..IF_FRAME.len() - 1]).unwrap();
         assert_eq!(info.to_answer("IF"), IF_FRAME);
         assert_eq!(info.to_mw(5), "MW00514074000+012010200000;");
+        // 9 and 10 frequency digits (IC-705 2 m, IC-9700 23 cm).
+        for f in ["IF001145500000+000000410000;", "IF0011296100000-001010400000;"] {
+            let info = ChannelInfo::parse(&f[2..f.len() - 1]).unwrap();
+            assert_eq!(info.to_answer("IF"), f);
+        }
     }
 
     #[test]
