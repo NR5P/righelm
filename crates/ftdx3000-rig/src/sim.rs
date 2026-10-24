@@ -106,6 +106,12 @@ impl SimCore {
             }
         }
         answers.insert("ID".into(), format!("ID{};", model.id));
+        // The model's own start values, where the FTDX3000's don't fit it.
+        for a in model.sim {
+            if let Some(k) = command::answer_key(a) {
+                answers.insert(k, a.to_string());
+            }
+        }
         for item in model.menu {
             answers.insert(format!("EX{:03}", item.num), format!("EX{:03}{};", item.num, default_menu_raw(model, item)));
         }
