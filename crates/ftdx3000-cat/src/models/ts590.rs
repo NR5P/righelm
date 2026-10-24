@@ -1367,10 +1367,10 @@ pub static TS590S: RadioModel = RadioModel {
         cat_items: &[62, 63],
         cw_bfo: None,
         cw_pitch_display: None,
-        // SSB-DATA always uses SL as a width (the CW/FSK width table): an
-        // item whose value is never "9" keeps RigHelm on that table.
-        data_other: Some((64, "9")),
+        // SSB-DATA always uses SL as a width (the CW/FSK width table).
+        data_other: None,
         data_disp: None,
+        data_psk: true,
     },
     caps: caps(109),
     bauds: BAUDS,
@@ -1407,6 +1407,7 @@ pub static TS590SG: RadioModel = RadioModel {
         // Menu 029 = 1 (HI/LO): SSB-DATA filters like SSB.
         data_other: Some((30, "0")),
         data_disp: None,
+        data_psk: false,
     },
     caps: caps(119),
     bauds: BAUDS,

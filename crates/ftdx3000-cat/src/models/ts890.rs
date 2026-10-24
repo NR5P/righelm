@@ -627,6 +627,7 @@ pub static TS890S: RadioModel = RadioModel {
         // Menu 6-12 Filter Control in SSB-DATA: 0 High & Low Cut.
         data_other: Some((108, "000")),
         data_disp: None,
+        data_psk: false,
     },
     caps: Caps {
         commands: COMMANDS,
