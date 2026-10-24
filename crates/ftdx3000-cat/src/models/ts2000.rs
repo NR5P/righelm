@@ -98,7 +98,7 @@ const BANDS: &[Band] = &[
 const COMMANDS: &[&str] = &[
     "AC", "AG", "AI", "AN", "BC", "BD", "BI", "BU", "BY", "CH", "CN", "CT", "DN", "EX", "FA", "FB", "FR", "FT", "GT",
     "ID", "IF", "KP", "KS", "KY", "LK", "MC", "MD", "MG", "ML", "MR", "MS", "MW", "MX", "NB", "NL", "NR", "OI", "OS",
-    "PA", "PB", "PC", "PL", "PR", "PS", "QI", "RA", "RC", "RD", "RG", "RL", "RM", "RT", "RU", "SC", "SD", "SH", "SM",
+    "PA", "PB", "PC", "PL", "PR0", "PS", "QI", "RA", "RC", "RD", "RG", "RL", "RM", "RT", "RU", "SC", "SD", "SH", "SM",
     "SQ", "TS", "TX", "UL", "UP", "VD", "VG", "VX", "XT",
 ];
 

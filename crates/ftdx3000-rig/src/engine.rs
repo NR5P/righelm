@@ -917,7 +917,8 @@ impl Engine {
             self.once.push_back(v.to_string());
         }
         if has("KM;") {
-            for k in 1..=model.caps.keyer_memories {
+            // RigHelm's KM has room for five (the FTDX3000's).
+            for k in 1..=model.caps.keyer_memories.min(5) {
                 self.once.push_back(format!("KM{k};"));
             }
         }

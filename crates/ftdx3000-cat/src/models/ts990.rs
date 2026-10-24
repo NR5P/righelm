@@ -396,7 +396,7 @@ pub static BANDS: &[Band] = &[
 
 const COMMANDS: &[&str] = &[
     "AB", "AC", "AG", "AI", "AN", "BC", "BD", "BI", "BP", "BS", "BU", "BY", "CH", "CN", "CT", "DN", "EX", "FA", "FB", "FT", "GT",
-    "ID", "IF", "KP", "KS", "LK", "MA", "MC", "MD", "MG", "ML", "NB", "NL", "NR", "PA", "PC", "PL", "PR", "PS", "QI", "RA", "RC", "RD",
+    "ID", "IF", "KP", "KS", "LK", "MA", "MC", "MD", "MG", "ML", "NB", "NL", "NR", "PA", "PC", "PL", "PR0", "PS", "QI", "RA", "RC", "RD",
     "RG", "RL", "RM", "RT", "RU", "SC", "SD", "SH", "SM", "SQ", "SV", "TS", "TX", "UP", "VD", "VG", "VS", "VX", "XT",
 ];
 

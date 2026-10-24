@@ -65,7 +65,7 @@ fn read_until(rig: &Rig, m: &RadioModel, cmd: &str, want: &str) {
 /// Reads the engine polls and the screens use.
 const READS: &[&str] = &[
     "ID;", "FA;", "FB;", "MD0;", "IF;", "OI;", "AG0;", "RG0;", "SQ0;", "GT0;", "PA0;", "RA0;", "RF0;", "NB0;", "NL0;", "NR0;", "RL0;",
-    "BC0;", "BP00;", "BP01;", "CO00;", "CO01;", "CO02;", "SH0;", "NA0;", "IS0;", "PC;", "MG;", "PR0;", "PL;", "VX;", "VG;", "VD;",
+    "BC0;", "BP00;", "BP01;", "CO00;", "CO01;", "CO02;", "SH0;", "NA0;", "IS0;", "PC;", "MG;", "PR0;", "PR1;", "PL;", "VX;", "VG;", "VD;",
     "ML0;", "ML1;", "KR;", "BI;", "CS;", "KS;", "KP;", "SD;", "TX;", "MX;", "FT;", "FR;", "VS;", "AC;", "AN0;", "MS;", "SM0;",
     "RM1;", "RM5;", "RM6;", "LK;", "FS;", "PS;", "RT;", "XT;", "MC;", "CN0;", "CT0;", "OS0;", "BY;", "RI0;", "DA;", "TS;", "SC;",
     "SF;", "UL;", "VF0;", "RO;", "AI;",
@@ -168,6 +168,35 @@ fn every_model_takes_level_sets() {
             rig.send(&s);
             read_until(&rig, m, &r, &s);
         }
+        rig.shutdown();
+    });
+}
+
+/// The real connect sequence, over a PTY like a serial port: probe, the
+/// model's translator, the start-up reads and the whole menu, with nothing
+/// left unanswered.
+#[cfg(unix)]
+#[test]
+fn every_model_connects_and_reads_everything_on_a_port() {
+    use ftdx3000_rig::hamlib_check::SimPort;
+    use ftdx3000_rig::transport::SerialSettings;
+    each_model(|m| {
+        let port = SimPort::start(m).unwrap();
+        let rig = Rig::start();
+        // Start-up reads and polls count as polls; log them to see misses.
+        rig.set_log_polls(true);
+        rig.connect(EngineConfig { model: m.key.into(), serial: SerialSettings { path: port.path.to_string_lossy().into(), ..Default::default() }, ..Default::default() });
+        let t0 = Instant::now();
+        while rig.state().menu.len() < m.menu.len() && t0.elapsed() < Duration::from_secs(30) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        // Let the polls run a while too.
+        std::thread::sleep(Duration::from_secs(2));
+        let unanswered: Vec<String> = rig.log_snapshot(4000).into_iter().filter(|e| e.text.starts_with("no answer") || e.text.contains("stopped answering")).map(|e| e.text).collect();
+        assert!(unanswered.is_empty(), "{}: {unanswered:?}", m.key);
+        assert_eq!(rig.state().menu.len(), m.menu.len(), "{}: menu not fully read", m.key);
+        assert!(matches!(rig.link(), LinkState::Connected { .. }), "{}: {:?}", m.key, rig.link());
+        assert_eq!(rig.state().power_on, Some(true), "{}", m.key);
         rig.shutdown();
     });
 }

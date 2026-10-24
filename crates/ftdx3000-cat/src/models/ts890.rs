@@ -593,7 +593,7 @@ pub static MODES: &[Mode] = &[
 
 const COMMANDS: &[&str] = &[
     "AB", "AC", "AG", "AI", "AN", "BC", "BD", "BI", "BP", "BS", "BU", "BY", "CH", "CN", "CT", "DN", "EX", "FA", "FB", "FR", "FT", "GT",
-    "ID", "IF", "KP", "KS", "LK", "MA", "MC", "MD", "MG", "ML", "MR", "MW", "NB", "NL", "NR", "PA", "PC", "PL", "PR", "PS", "QI",
+    "ID", "IF", "KP", "KS", "LK", "MA", "MC", "MD", "MG", "ML", "MR", "MW", "NB", "NL", "NR", "PA", "PC", "PL", "PR0", "PS", "QI",
     "RA", "RC", "RD", "RG", "RL", "RM", "RT", "RU", "SC", "SD", "SH", "SM", "SQ", "SV", "TS", "TX", "UP", "VD", "VG", "VS", "VX",
     "XT",
 ];

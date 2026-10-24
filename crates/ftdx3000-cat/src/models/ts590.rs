@@ -1310,7 +1310,7 @@ pub static MODES: &[Mode] = &[
 /// The RigHelm commands the TS-590 can carry out.
 const COMMANDS: &[&str] = &[
     "AB", "AC", "AG", "AI", "AN", "BC", "BP", "BS", "BY", "CH", "CN", "CT", "DN", "EX", "FA", "FB", "FR", "FT", "GT", "ID", "IF",
-    "KP", "KS", "LK", "MA", "MC", "MD", "MG", "ML", "MR", "MW", "NB", "NL", "NR", "PA", "PB", "PC", "PL", "PR", "PS", "QI", "RA",
+    "KP", "KS", "LK", "MA", "MC", "MD", "MG", "ML", "MR", "MW", "NB", "NL", "NR", "PA", "PB", "PC", "PL", "PR0", "PS", "QI", "RA",
     "RC", "RD", "RG", "RL", "RM", "RS", "RT", "RU", "SC", "SD", "SH", "SM", "SQ", "TS", "TX", "UP", "VD", "VG", "VS", "VX", "XT",
 ];
 

@@ -136,7 +136,7 @@ const COMMANDS: &[&str] = &[
     "AB", "AC", "AG", "AI", "AM", "AN", "BC", "BD", "BI", "BP", "BS", "BU", "BY", "CH", "CN", "CO00", "CO01", "CS", "CT", "DA",
     "DN", "ED", "EK", "EU", "EX", "FA", "FB", "FR", "FS", "FT", "GT", "ID", "IF", "IS", "KM", "KP", "KR", "KS", "KY",
     "LK", "LM", "MA", "MC", "MD", "MG", "ML", "MR", "MS", "MW", "MX", "NA", "NB", "NL", "NR", "OI", "OS", "PA", "PB",
-    "PC", "PL", "PR", "PS", "QI", "QR", "QS", "RA", "RC", "RD", "RF", "RG", "RI", "RL", "RM", "RO", "RS", "RT", "RU",
+    "PC", "PL", "PR0", "PS", "QI", "QR", "QS", "RA", "RC", "RD", "RF", "RG", "RI", "RL", "RM", "RO", "RS", "RT", "RU",
     "SC", "SD", "SF", "SH", "SM", "SQ", "SV", "TS", "TX", "UL", "UP", "VD", "VF", "VG", "VM", "VS", "VX", "XT",
 ];
 
