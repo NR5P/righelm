@@ -162,6 +162,111 @@ impl Resampler {
     }
 }
 
+/// Playout buffer for audio that arrives in clumps: Wi-Fi often delivers the
+/// 20 ms packets several at a time, 100 ms or more apart. It waits until it
+/// holds `target` before playing, and when it runs dry anyway it fades out
+/// (no click), waits for more next time, and fades back in. Latency it turns
+/// out not to need is taken back slowly by skipping single samples.
+pub(crate) struct Jitter {
+    buf: std::collections::VecDeque<f32>,
+    playing: bool,
+    /// Depth to build up before (re)starting.
+    target: usize,
+    max_target: usize,
+    /// Hard limit: beyond this the oldest audio is dropped.
+    cap: usize,
+    /// Lowest depth seen in the current window, samples played in it.
+    low: usize,
+    played: usize,
+    window: usize,
+    /// Samples still to skip.
+    trim: usize,
+    last: f32,
+    gain: f32,
+    gain_step: f32,
+    rate: u32,
+    /// Times it ran dry.
+    pub(crate) dropouts: u32,
+}
+
+#[cfg_attr(target_os = "linux", allow(dead_code))] // used by the cpal backend
+impl Jitter {
+    /// Skip one sample in this many while trimming (0.5 %: inaudible).
+    const TRIM_EVERY: usize = 200;
+
+    pub(crate) fn new(rate: u32, start: Duration, max: Duration) -> Self {
+        let n = |d: Duration| (d.as_secs_f64() * rate as f64) as usize;
+        let target = n(start).max(1);
+        let max_target = n(max).max(target);
+        Jitter {
+            buf: std::collections::VecDeque::new(),
+            playing: false,
+            target,
+            max_target,
+            cap: max_target * 2,
+            low: usize::MAX,
+            played: 0,
+            window: rate as usize * 10,
+            trim: 0,
+            last: 0.0,
+            gain: 0.0,
+            gain_step: 1.0 / (rate as f32 * 0.005), // 5 ms fades
+            rate,
+            dropouts: 0,
+        }
+    }
+
+    /// What it waits for before (re)starting.
+    pub(crate) fn target(&self) -> Duration {
+        Duration::from_secs_f64(self.target as f64 / self.rate as f64)
+    }
+
+    pub(crate) fn push(&mut self, samples: &[f32]) {
+        self.buf.extend(samples.iter().copied());
+        let excess = self.buf.len().saturating_sub(self.cap);
+        self.buf.drain(..excess);
+    }
+
+    /// The next sample to play.
+    pub(crate) fn next(&mut self) -> f32 {
+        if !self.playing && self.buf.len() >= self.target {
+            self.playing = true;
+            self.low = usize::MAX;
+            self.played = 0;
+        }
+        if self.playing {
+            match self.buf.pop_front() {
+                Some(mut v) => {
+                    self.played += 1;
+                    if self.trim > 0 && self.played % Self::TRIM_EVERY == 0 && !self.buf.is_empty() {
+                        v = self.buf.pop_front().unwrap_or(v);
+                        self.trim -= 1;
+                    }
+                    self.low = self.low.min(self.buf.len());
+                    if self.played >= self.window {
+                        // Keep half the target in hand at the lowest point.
+                        self.trim = self.low.saturating_sub(self.target / 2);
+                        self.low = usize::MAX;
+                        self.played = 0;
+                    }
+                    self.gain = (self.gain + self.gain_step).min(1.0);
+                    self.last = v;
+                    return v * self.gain;
+                }
+                None => {
+                    // Ran dry: rebuild a deeper buffer before playing again.
+                    self.playing = false;
+                    self.trim = 0;
+                    self.target = (self.target + self.target / 2).min(self.max_target);
+                    self.dropouts += 1;
+                }
+            }
+        }
+        self.gain = (self.gain - self.gain_step).max(0.0);
+        self.last * self.gain
+    }
+}
+
 /// RMS level of a frame in dBFS (-100 for silence).
 pub fn level_dbfs(frame: &[i16]) -> f32 {
     if frame.is_empty() {
@@ -202,6 +307,54 @@ mod tests {
         let mut f = vec![1000i16; 4];
         apply_gain(&mut f, 2.0);
         assert_eq!(f, vec![2000; 4]);
+    }
+
+    #[test]
+    fn jitter_rides_out_clumps_without_clicks() {
+        let rate = 24_000;
+        let mut j = Jitter::new(rate, Duration::from_millis(40), Duration::from_millis(300));
+        let tone = |i: usize| (std::f32::consts::TAU * 700.0 * i as f32 / rate as f32).sin() * 0.5;
+        let frame = 480;
+        let (mut sent, mut out) = (0usize, Vec::new());
+        // Packets arrive five at a time every 100 ms, now and then 60 ms late
+        // (and the next clump that much sooner).
+        for clump in 0..100 {
+            for _ in 0..5 {
+                let f: Vec<f32> = (sent..sent + frame).map(tone).collect();
+                j.push(&f);
+                sent += frame;
+            }
+            let gap = match clump % 10 {
+                8 => 160,
+                9 => 40,
+                _ => 100,
+            };
+            out.extend((0..rate as usize * gap / 1000).map(|_| j.next()));
+        }
+        // No clicks: no jump much bigger than the tone itself makes (700 Hz
+        // at 0.5: ~0.09 per sample, twice that where a sample is skipped).
+        let worst = out.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max);
+        assert!(worst < 0.2, "{worst}");
+        // After the first runs dry, the deeper buffer holds: no more dropouts late on.
+        let tail = &out[out.len() / 2..];
+        let silent_runs = tail.windows(48).filter(|w| w.iter().all(|s| s.abs() < 1e-3)).count();
+        assert_eq!(silent_runs, 0);
+    }
+
+    #[test]
+    fn jitter_takes_back_latency_it_does_not_need() {
+        let rate = 24_000;
+        let mut j = Jitter::new(rate, Duration::from_millis(40), Duration::from_millis(300));
+        // 250 ms queued up front, then a steady feed for 80 s: latency comes
+        // back down to about 20 ms.
+        j.push(&vec![0.1; rate as usize / 4]);
+        for _ in 0..80 * 50 {
+            j.push(&[0.1; 480]);
+            for _ in 0..480 {
+                j.next();
+            }
+        }
+        assert!(j.buf.len() < rate as usize / 20, "{}", j.buf.len());
     }
 
     #[test]

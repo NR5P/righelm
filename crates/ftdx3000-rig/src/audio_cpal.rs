@@ -1,7 +1,6 @@
 //! Audio through cpal (CoreAudio on macOS). Devices run at their native
 //! format and rate; we convert to/from mono i16 at the requested rate.
 
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -12,7 +11,7 @@ use cpal::{FromSample, SampleFormat, SizedSample};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use parking_lot::Mutex;
 
-use super::{AudioDevice, DeviceEntry, Resampler, frame_len};
+use super::{AudioDevice, DeviceEntry, Jitter, Resampler, frame_len};
 
 fn device_name(d: &cpal::Device) -> String {
     d.to_string()
@@ -165,7 +164,7 @@ impl Playback {
         let (ready_tx, ready_rx) = bounded::<Result<(), String>>(1);
         let (dev, stop2, ok2) = (dev.clone(), stop.clone(), ok.clone());
         thread::Builder::new().name("audio-playback".into()).spawn(move || {
-            let ring: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::new()));
+            let ring: Arc<Mutex<Option<Jitter>>> = Arc::new(Mutex::new(None));
             let (stream, out_rate) = match open_output(&dev, ring.clone(), ok2.clone()) {
                 Ok(s) => s,
                 Err(e) => {
@@ -178,21 +177,23 @@ impl Playback {
                 return;
             }
             let _ = ready_tx.send(Ok(()));
-            let max = (max_latency.as_secs_f64() * out_rate as f64) as usize;
-            // A little silence first so the first packets don't underrun.
-            ring.lock().extend(std::iter::repeat_n(0.0, out_rate as usize / 25));
+            // 40 ms in hand to start with, more if the audio arrives in clumps.
+            *ring.lock() = Some(Jitter::new(out_rate, Duration::from_millis(40).min(max_latency), max_latency));
             let mut resampler = Resampler::new(rate, out_rate);
             let mut out = Vec::new();
+            let mut dropouts = 0;
             while !stop2.load(Ordering::Relaxed) && ok2.load(Ordering::Relaxed) {
                 let Ok(frame) = rx.recv_timeout(Duration::from_millis(100)) else { continue };
                 let input: Vec<f32> = frame.iter().map(|s| *s as f32 / 32768.0).collect();
                 out.clear();
                 resampler.process(&input, &mut out);
-                let mut r = ring.lock();
-                r.extend(out.iter().copied());
-                // Keep latency bounded: drop the oldest audio if we're ahead.
-                let excess = r.len().saturating_sub(max.max(out.len() * 2));
-                r.drain(..excess);
+                if let Some(j) = ring.lock().as_mut() {
+                    j.push(&out);
+                    if j.dropouts != dropouts {
+                        dropouts = j.dropouts;
+                        log::debug!("audio playback ran dry ({dropouts}x); now buffering {:?}", j.target());
+                    }
+                }
             }
             drop(stream);
         })?;
@@ -219,7 +220,7 @@ impl Drop for Playback {
     }
 }
 
-fn open_output(dev: &AudioDevice, ring: Arc<Mutex<VecDeque<f32>>>, ok: Arc<AtomicBool>) -> Result<(cpal::Stream, u32), String> {
+fn open_output(dev: &AudioDevice, ring: Arc<Mutex<Option<Jitter>>>, ok: Arc<AtomicBool>) -> Result<(cpal::Stream, u32), String> {
     let device = find(dev, false).ok_or_else(|| format!("audio output \"{dev}\" not found"))?;
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
     let config = supported.config();
@@ -233,7 +234,7 @@ fn open_output(dev: &AudioDevice, ring: Arc<Mutex<VecDeque<f32>>>, ok: Arc<Atomi
         device: &cpal::Device,
         config: cpal::StreamConfig,
         channels: usize,
-        ring: Arc<Mutex<VecDeque<f32>>>,
+        ring: Arc<Mutex<Option<Jitter>>>,
         err: impl FnMut(cpal::Error) + Send + 'static,
     ) -> Result<cpal::Stream, cpal::Error> {
         device.build_output_stream::<T, _, _>(
@@ -241,7 +242,7 @@ fn open_output(dev: &AudioDevice, ring: Arc<Mutex<VecDeque<f32>>>, ok: Arc<Atomi
             move |data: &mut [T], _| {
                 let mut r = ring.lock();
                 for frame in data.chunks_mut(channels.max(1)) {
-                    let v = T::from_sample(r.pop_front().unwrap_or(0.0));
+                    let v = T::from_sample(r.as_mut().map_or(0.0, Jitter::next));
                     frame.fill(v);
                 }
             },

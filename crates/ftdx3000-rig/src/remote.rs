@@ -953,7 +953,8 @@ fn audio_session(
     let udp = UdpSocket::bind(SocketAddr::new(any, 0))?;
     udp.set_read_timeout(Some(Duration::from_millis(100)))?;
     let cfg = config.lock().clone();
-    let mut speaker = Playback::start(&cfg.speaker, rate, Duration::from_millis(150))?;
+    // Room for Wi-Fi that delivers the packets in clumps 150 ms apart.
+    let mut speaker = Playback::start(&cfg.speaker, rate, Duration::from_millis(300))?;
     // A microphone that won't open must not cost the receive audio.
     let (mut mic, mic_error) = if cfg.send_mic {
         match audio::computer_mic(&cfg.mic).and_then(|d| Capture::start(&d, rate).map_err(|e| format!("microphone {d}: {e}"))) {
