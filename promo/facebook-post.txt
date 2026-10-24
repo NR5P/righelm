@@ -1,0 +1,23 @@
+Hi all, I've been working on a free, open-source program for the FTDX3000 called RigHelm, and I wanted to share an early look.
+
+It started because I wanted something like Win4Yaesu on Linux. It now runs on Linux and Mac (Windows builds from source), and it gives you:
+
+- Full radio control: both VFOs, bands, modes, filters and DSP, live meters, keyer and voice memories, and all 196 menu items with backup and restore
+- An audio waterfall of the receive audio, with the passband and CW pitch marked
+- Port sharing: it owns the CAT port and shares it with WSJT-X, fldigi, flrig, your logger and so on through virtual serial ports and a Hamlib rigctld server, all at the same time
+
+The part I'm most excited about is remote over your home network. Leave RigHelm running on the computer the radio is plugged into, then open it on any other computer in the house. It finds the radio on its own, and you get full control plus the radio's audio, and you can send your mic back. Programs like WSJT-X can run on the remote computer too, against RigHelm's virtual ports. Transmit needs a password; without one, remote users can only listen and tune.
+
+Here's a quick demo. My FTDX3000 is on a ThinkPad in the shack, and I'm controlling it over the LAN from a Mac: tuning onto a CW station and narrowing the filter, then FT8 on 14.074, then a voice net on 14.300, with the radio's actual audio:
+https://youtu.be/kniQVGPYbDg
+
+Please keep in mind it's still in its infancy. Receive and control are working well for me, but transmit hasn't been tested much yet, so go easy, and watch the radio the first time you key it through RigHelm.
+
+I'm going to do more demos this weekend, so stay tuned.
+
+Test builds for Mac and Linux are here: https://nr5p.com/righelm.html
+Source code (GPL v3): https://github.com/NR5P/righelm
+
+If you try it, I'd really like to hear how it goes, good or bad. Comment here, or open an issue on GitHub.
+
+73, Nathan NR5P
