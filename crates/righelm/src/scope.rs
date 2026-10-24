@@ -464,6 +464,7 @@ pub fn window(app: &mut crate::App, ctx: &egui::Context, shared: &crate::Shared)
 fn window_contents(app: &mut crate::App, ui: &mut Ui) {
     let rig = app.rig().clone();
     let s = rig.state().clone();
+    let was_out = app.services.config.ui.scope_window;
     app.space_ptt(ui.ctx());
     egui::CentralPanel::default().show(ui, |ui| {
         let live = rig.link().is_open() && s.power_on != Some(false);
@@ -491,6 +492,13 @@ fn window_contents(app: &mut crate::App, ui: &mut Ui) {
     }
     if close {
         prefs.scope_window = false;
+    }
+    // Only the main window can take this one away, and Wayland stops drawing
+    // a window that's completely covered (as it is under this one full
+    // screen), so get out of its way.
+    if was_out && !prefs.scope_window && ui.ctx().viewport_id() == window_id() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
     }
 }
 
