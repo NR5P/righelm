@@ -75,13 +75,28 @@ const READS: &[&str] = &[
 fn every_model_answers_what_it_says_it_has() {
     each_model(|m| {
         let (rig, _sim) = start(m);
+        // A radio can lack one of a command's sub-functions (`CO02`, the
+        // APF frequency, on radios with contour but no APF frequency): each
+        // command it claims must answer at least one of its reads, and
+        // every answer must be that command's.
+        let mut answered: std::collections::BTreeMap<&str, bool> = Default::default();
         for cmd in READS {
             if m.has(&cmd[..2]) {
-                let a = read(&rig, m, cmd);
-                assert!(a.starts_with(&cmd[..2]), "{}: {cmd} answered {a}", m.key);
+                let ok = answered.entry(&cmd[..2]).or_insert(false);
+                match rig.read(cmd, Freshness::Radio, Source::Gui, T) {
+                    Ok(a) => {
+                        assert!(a.starts_with(&cmd[..2]), "{}: {cmd} answered {a}", m.key);
+                        *ok = true;
+                    }
+                    Err(e) if !READS.iter().any(|r| r != cmd && r[..2] == cmd[..2]) => panic!("{}: {cmd} failed: {e}", m.key),
+                    Err(_) => {}
+                }
             } else {
                 assert!(rig.read(cmd, Freshness::Radio, Source::Gui, T).is_err(), "{}: {cmd} should be refused", m.key);
             }
+        }
+        for (code, ok) in answered {
+            assert!(ok, "{}: no read of {code} was answered", m.key);
         }
         rig.shutdown();
     });
