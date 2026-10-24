@@ -70,6 +70,15 @@ pub fn freq_display(ui: &mut Ui, hz: u64, size: f32, color: Color32, step: i64, 
     if !enabled {
         return FreqAction::None;
     }
+    // How to use it, for a pointer resting here — not while tuning.
+    let tuned_id = response.id.with("tuned");
+    let now = ui.input(|i| i.time);
+    if ticks != 0 || response.dragged() {
+        ui.data_mut(|d| d.insert_temp(tuned_id, now));
+    }
+    if now - ui.data(|d| d.get_temp::<f64>(tuned_id).unwrap_or(f64::MIN)) > 3.0 {
+        response.clone().on_hover_text("Scroll over a digit to tune it · scroll elsewhere or drag to tune by step · double-click to type");
+    }
     if response.double_clicked() {
         return FreqAction::Edit;
     }
@@ -194,16 +203,23 @@ pub struct Meter<'a> {
 
 impl Meter<'_> {
     pub fn show(self, ui: &mut Ui, width: f32) {
-        let h = 34.0;
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, h), Sense::hover());
+        self.show_sized(ui, width, 34.0);
+    }
+
+    /// The meter at a given height: down to about 20 points without a scale,
+    /// 26 with one.
+    pub fn show_sized(self, ui: &mut Ui, width: f32, h: f32) -> egui::Response {
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, h), Sense::hover());
         let p = ui.painter_at(rect);
         p.rect_filled(rect, CornerRadius::same(4), PANEL);
+        let compact = h < 30.0;
         let label_w = 46.0;
-        let text_w = 74.0;
+        let text_w = if compact { 62.0 } else { 74.0 };
         p.text(Pos2::new(rect.left() + 6.0, rect.center().y), Align2::LEFT_CENTER, self.label, FontId::proportional(13.0), Color32::LIGHT_GRAY);
+        let scale_room = if self.ticks.is_empty() { (h - 8.0) / 2.0 } else if compact { 12.0 } else { 16.0 };
         let bar = Rect::from_min_max(
-            Pos2::new(rect.left() + label_w, rect.top() + 16.0),
-            Pos2::new(rect.right() - text_w, rect.bottom() - 6.0),
+            Pos2::new(rect.left() + label_w, rect.top() + scale_room),
+            Pos2::new(rect.right() - text_w, rect.bottom() - if compact { 4.0 } else { 6.0 }),
         );
         p.rect_filled(bar, CornerRadius::same(2), Color32::from_rgb(30, 32, 38));
         let f = self.fraction.clamp(0.0, 1.0);
@@ -225,11 +241,25 @@ impl Meter<'_> {
         for (t, l) in self.ticks {
             let x = bar.left() + bar.width() * t;
             p.line_segment([Pos2::new(x, bar.top() - 3.0), Pos2::new(x, bar.top())], Stroke::new(1.0, Color32::GRAY));
-            p.text(Pos2::new(x, bar.top() - 3.0), Align2::CENTER_BOTTOM, l, FontId::proportional(10.0), Color32::GRAY);
+            p.text(Pos2::new(x, bar.top() - 3.0), Align2::CENTER_BOTTOM, l, FontId::proportional(if compact { 9.0 } else { 10.0 }), Color32::GRAY);
         }
         p.rect_stroke(bar, CornerRadius::same(2), Stroke::new(1.0, Color32::from_rgb(60, 62, 70)), StrokeKind::Outside);
-        p.text(Pos2::new(rect.right() - 6.0, rect.center().y), Align2::RIGHT_CENTER, self.text, FontId::monospace(14.0), Color32::WHITE);
+        p.text(Pos2::new(rect.right() - 6.0, rect.center().y), Align2::RIGHT_CENTER, self.text, FontId::monospace(if compact { 13.0 } else { 14.0 }), Color32::WHITE);
+        response
     }
+}
+
+/// In a wrapping row: start a new line unless `width` still fits on this
+/// one (for composite widgets like sliders, which don't wrap by themselves).
+pub fn wrap_unless_room(ui: &mut Ui, width: f32) {
+    if row_room(ui) < width {
+        ui.end_row();
+    }
+}
+
+/// What's left of the current row in a wrapping layout.
+pub fn row_room(ui: &Ui) -> f32 {
+    ui.max_rect().right() - ui.cursor().min.x
 }
 
 /// A toggle that looks like a lit front-panel button. Returns true if clicked.

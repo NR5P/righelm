@@ -73,9 +73,14 @@ pub struct UiPrefs {
     pub scope_auto: bool,
     pub scope_floor_db: i32,
     pub scope_range_db: i32,
+    /// No longer used: the band scope fills the Operate page's height.
     pub scope_height: u32,
     /// Show the US band plan (CW/data and phone segments) and FT8/FT4 spots.
     pub scope_band_plan: bool,
+    /// Widths of the Operate page's control columns (left and right of the
+    /// scope), as last dragged.
+    pub operate_left_w: u32,
+    pub operate_right_w: u32,
 }
 
 impl Default for UiPrefs {
@@ -101,6 +106,8 @@ impl Default for UiPrefs {
             scope_range_db: 50,
             scope_height: 220,
             scope_band_plan: true,
+            operate_left_w: 290,
+            operate_right_w: 300,
         }
     }
 }

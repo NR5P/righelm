@@ -399,6 +399,13 @@ fn tune(bs: &mut BandScope, rig: &Rig, s: &RadioState, t: &Target, audio_lines: 
     bs.zero_beat = rx_vfo(s).filter(|(_, m)| m.is_cw() && t.signal.is_some()).map(|_| (audio_lines, Instant::now()));
 }
 
+/// Whether the band scope has anything to show (a dongle, and not switched off).
+pub fn visible(app: &crate::App) -> bool {
+    let status = app.services.scope_status();
+    app.services.config.ui.show_scope && (status.present || status.running)
+}
+
+/// The band scope, filling the height it's given.
 pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
     let status: ScopeStatus = app.services.scope_status();
     if !app.services.config.ui.show_scope || !(status.present || status.running) {
@@ -468,8 +475,10 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
 
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("BAND SCOPE").strong().size(15.0).color(AMBER));
+        ui.horizontal_wrapped(|ui| {
+            // Rows as tall as the buttons, so a label starting one lines up.
+            ui.set_row_height(22.0);
+            ui.label(RichText::new("BAND SCOPE").strong().size(15.0).color(AMBER)).on_hover_text(&status.text);
             ui.label("Span");
             for (hz, label) in SPANS {
                 let r = ui.selectable_label(prefs.scope_span == hz, label);
@@ -479,30 +488,40 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
                 }
             }
             ui.separator();
-            ui.label("Speed");
+            widgets::wrap_unless_room(ui, 200.0);
+            ui.add_sized([40.0, 22.0], egui::Label::new("Speed"));
             for (v, l) in [(6u32, "slow"), (15, "normal"), (30, "fast")] {
                 if ui.selectable_label(prefs.scope_fps == v, l).clicked() {
                     prefs.scope_fps = v;
                 }
             }
             ui.separator();
+            widgets::wrap_unless_room(ui, 100.0);
             ui.checkbox(&mut prefs.scope_auto, "Auto level");
+            ui.spacing_mut().slider_width = 110.0;
             if !prefs.scope_auto {
+                widgets::wrap_unless_room(ui, 230.0);
                 let r = ui.add(egui::Slider::new(&mut prefs.scope_floor_db, -130..=-30).text("floor dB"));
                 prefs.scope_floor_db = (prefs.scope_floor_db + widgets::scroll_steps(ui, &r, 12.0) as i32).clamp(-130, -30);
             }
+            widgets::wrap_unless_room(ui, 180.0);
             let r = ui.add(egui::Slider::new(&mut prefs.scope_range_db, 20..=120).text("contrast").show_value(false));
             prefs.scope_range_db = (prefs.scope_range_db + widgets::scroll_steps(ui, &r, 12.0) as i32).clamp(20, 120);
             let stale = bs.last_row.is_none_or(|t| t.elapsed().as_secs_f32() > 1.5);
             let text = if stale && !bs.transmitting { format!("{} — waiting for the dongle…", status.text) } else { status.text.clone() };
-            ui.add(egui::Label::new(RichText::new(text).weak()).truncate());
+            // The status where there's room for it (it's on the title too).
+            if widgets::row_room(ui) >= 120.0 {
+                ui.add(egui::Label::new(RichText::new(&text).weak()).truncate()).on_hover_text(text);
+            }
         });
 
+        // Spectrum and waterfall share the height left, the spectrum up to 120.
         let width = ui.available_width();
-        let spec_h = 120.0;
         let plan_h = if prefs.scope_band_plan { 5.0 } else { 0.0 };
         let scale_h = 16.0;
-        let wf_h = prefs.scope_height.clamp(100, 700) as f32;
+        let graphs = (ui.available_height() - 2.0 - plan_h - scale_h).max(100.0);
+        let spec_h = (graphs * 0.4).clamp(60.0, 120.0);
+        let wf_h = graphs - spec_h;
         let (rect, resp) = ui.allocate_exact_size(vec2(width, spec_h + plan_h + scale_h + wf_h), Sense::click());
         let p = ui.painter_at(rect);
         let spec = Rect::from_min_size(rect.min, vec2(width, spec_h));

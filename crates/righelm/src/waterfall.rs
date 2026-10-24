@@ -226,7 +226,9 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
 
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
+            // Rows as tall as the buttons, so a label starting one lines up.
+            ui.set_row_height(22.0);
             ui.label(RichText::new("AUDIO WATERFALL").strong().size(15.0).color(AMBER));
             ui.label("Span");
             for hz in [3000u32, 4000, 6000] {
@@ -235,18 +237,24 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
                 }
             }
             ui.separator();
-            ui.label("Speed");
+            widgets::wrap_unless_room(ui, 200.0);
+            ui.add_sized([40.0, 22.0], egui::Label::new("Speed"));
             for (v, l) in [(4u32, "slow"), (2, "normal"), (1, "fast")] {
                 if ui.selectable_label(prefs.wf_speed == v, l).clicked() {
                     prefs.wf_speed = v;
                 }
             }
             ui.separator();
+            widgets::wrap_unless_room(ui, 100.0);
             ui.checkbox(&mut prefs.wf_auto, "Auto level");
-            let r = ui.add_enabled(!prefs.wf_auto, egui::Slider::new(&mut prefs.wf_floor_db, -140..=-40).text("floor dB"));
+            ui.spacing_mut().slider_width = 110.0;
+            // The floor is set by hand only with auto level off (as on the band scope).
             if !prefs.wf_auto {
+                widgets::wrap_unless_room(ui, 230.0);
+                let r = ui.add(egui::Slider::new(&mut prefs.wf_floor_db, -140..=-40).text("floor dB"));
                 prefs.wf_floor_db = (prefs.wf_floor_db + widgets::scroll_steps(ui, &r, 12.0) as i32).clamp(-140, -40);
             }
+            widgets::wrap_unless_room(ui, 180.0);
             let r = ui.add(egui::Slider::new(&mut prefs.wf_range_db, 20..=120).text("contrast").show_value(false));
             prefs.wf_range_db = (prefs.wf_range_db + widgets::scroll_steps(ui, &r, 12.0) as i32).clamp(20, 120);
             let stale = wf.last_audio.is_none_or(|t| t.elapsed().as_secs_f32() > 1.0);
@@ -256,10 +264,12 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
         });
 
         let max_hz = prefs.wf_max_hz as f32;
+        // Spectrum and waterfall share the height left, the spectrum up to 70.
         let width = ui.available_width();
-        let spec_h = 70.0;
-        let wf_h = prefs.wf_height.clamp(80, 600) as f32;
         let scale_h = 16.0;
+        let graphs = (ui.available_height() - 2.0 - scale_h).max(60.0);
+        let spec_h = (graphs * 0.35).clamp(30.0, 70.0);
+        let wf_h = graphs - spec_h;
         let (rect, resp) = ui.allocate_exact_size(vec2(width, spec_h + wf_h + scale_h), Sense::click());
         let p = ui.painter_at(rect);
         p.rect_filled(rect, 4.0, widgets::PANEL);

@@ -270,15 +270,18 @@ fn display(app: &mut App, ui: &mut Ui) {
         let prefs = &mut app.services.config.ui;
         ui.checkbox(&mut prefs.show_waterfall, "Show the audio waterfall on the Operate page");
         ui.horizontal(|ui| {
-            ui.label("Waterfall height");
+            ui.label("Audio waterfall height under the band scope");
             ui.add(egui::Slider::new(&mut prefs.wf_height, 80..=600).suffix(" px"));
         });
         ui.checkbox(&mut prefs.show_scope, "Show the band scope on the Operate page (when an RTL-SDR dongle is found)");
         ui.checkbox(&mut prefs.scope_band_plan, "Band scope: show the US band plan (CW/data and phone) and FT8/FT4 calling frequencies");
-        ui.horizontal(|ui| {
-            ui.label("Band scope waterfall height");
-            ui.add(egui::Slider::new(&mut prefs.scope_height, 100..=700).suffix(" px"));
-        });
+        ui.label(
+            RichText::new(
+                "The band scope and the audio waterfall fill the middle of the Operate page; drag the line between them to share it out. \
+                 The control columns on either side can be made wider or narrower by dragging their edges.",
+            )
+            .weak(),
+        );
         ui.checkbox(&mut prefs.show_macros, "Show the macro buttons on the Operate page");
         ui.checkbox(&mut prefs.show_rotator, "Show rotator control (Yaesu G-800DXA/1000DXA/2800DXA on the radio's ROT jack)");
     });

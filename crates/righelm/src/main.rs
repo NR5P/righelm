@@ -192,6 +192,8 @@ impl App {
         self.status = Some((msg.into(), Instant::now()));
     }
 
+    /// One row: the link light and name, the tabs, then the connection and
+    /// power on the right (the link's description fills what's left).
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         let link = self.rig().link();
         ui.horizontal(|ui| {
@@ -203,11 +205,25 @@ impl App {
                 LinkState::Error(e) => (RED, e.clone()),
                 LinkState::Disconnected => (Color32::GRAY, "disconnected".into()),
             };
-            ui.label(RichText::new("●").color(dot).size(18.0));
+            ui.label(RichText::new("●").color(dot).size(18.0)).on_hover_text(&text);
             ui.add(egui::Image::new(&self.logo).fit_to_exact_size(egui::vec2(26.0, 26.0)));
-            ui.label(RichText::new("RigHelm").strong().size(18.0).color(AMBER));
-            ui.label(RichText::new("FTDX3000").weak());
-            ui.add(egui::Label::new(RichText::new(text).weak()).truncate());
+            ui.label(RichText::new("RigHelm").strong().size(18.0).color(AMBER)).on_hover_text("FTDX3000 rig control");
+            ui.add_space(8.0);
+            for (tab, label) in [
+                (Tab::Operate, "Operate"),
+                (Tab::Menu, "Radio menu"),
+                (Tab::Memories, "Memories"),
+                (Tab::Sharing, "Ports & sharing"),
+                (Tab::Remote, "Remote (LAN)"),
+                (Tab::Console, "CAT console"),
+                (Tab::Settings, "Settings"),
+            ] {
+                let r = ui.selectable_label(self.tab == tab, RichText::new(label).size(15.0));
+                demo::mark(format!("tab:{label}"), r.rect);
+                if r.clicked() {
+                    self.tab = tab;
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if self.services.cw().is_some()
                     && ui
@@ -244,30 +260,15 @@ impl App {
                 } else if matches!(link, LinkState::NoResponse { .. }) && ui.button("Power on").clicked() {
                     self.rig().send("PS1;");
                 }
+                // A passing message takes the place of the link's description.
+                let flash = self.status.as_ref().filter(|(_, at)| at.elapsed() < Duration::from_secs(6)).map(|(m, _)| m.clone());
+                let label = match flash {
+                    Some(msg) => egui::Label::new(RichText::new(msg).color(AMBER)),
+                    None if dot == GREEN => egui::Label::new(RichText::new(&text).weak()),
+                    None => egui::Label::new(RichText::new(&text).color(dot)),
+                };
+                ui.add(label.truncate()).on_hover_text(&text);
             });
-        });
-        ui.horizontal(|ui| {
-            for (tab, label) in [
-                (Tab::Operate, "Operate"),
-                (Tab::Menu, "Radio menu"),
-                (Tab::Memories, "Memories"),
-                (Tab::Sharing, "Ports & sharing"),
-                (Tab::Remote, "Remote (LAN)"),
-                (Tab::Console, "CAT console"),
-                (Tab::Settings, "Settings"),
-            ] {
-                let r = ui.selectable_label(self.tab == tab, RichText::new(label).size(15.0));
-                demo::mark(format!("tab:{label}"), r.rect);
-                if r.clicked() {
-                    self.tab = tab;
-                }
-            }
-            if let Some((msg, at)) = &self.status {
-                if at.elapsed() < Duration::from_secs(6) {
-                    ui.separator();
-                    ui.label(RichText::new(msg).color(AMBER));
-                }
-            }
         });
     }
 }
@@ -343,6 +344,13 @@ fn setup_style(ctx: &egui::Context) {
     });
 }
 
+/// A starting window size for layout checks: `FTDX3000_WINDOW=1366x700`.
+fn window_size() -> Option<[f32; 2]> {
+    let v = std::env::var("FTDX3000_WINDOW").ok()?;
+    let (w, h) = v.split_once('x')?;
+    Some([w.trim().parse().ok()?, h.trim().parse().ok()?])
+}
+
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,righelm=info,ftdx3000_rig=info")).init();
     // A recorded demo draws as fast as it can at 1080p, without waiting for
@@ -353,7 +361,7 @@ fn main() -> eframe::Result {
             .with_title("RigHelm — FTDX3000 Rig Control")
             .with_app_id("righelm")
             .with_icon(eframe::icon_data::from_png_bytes(ICON_PNG).expect("embedded icon"))
-            .with_inner_size(if demo { [1920.0, 1080.0] } else { [1280.0, 860.0] })
+            .with_inner_size(if demo { [1920.0, 1080.0] } else { window_size().unwrap_or([1280.0, 860.0]) })
             .with_min_inner_size([900.0, 600.0]),
         ..Default::default()
     };

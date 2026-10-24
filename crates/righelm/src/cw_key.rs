@@ -18,23 +18,22 @@ const RADIO_KEY_HOVER: &str = "CW from the key or paddle plugged into the radio 
 const COMPUTER_KEY_HOVER: &str = "CW from this computer (touchpad, keyboard, typed text) is live. Click to go back to the radio's key.";
 
 /// The key switch on the Operate page: RADIO KEY (default) or COMPUTER KEY.
-pub fn arm_switch(app: &mut App, ui: &mut Ui) {
+pub fn arm_button(app: &mut App, ui: &mut Ui, size: egui::Vec2) {
     let armed = app.services.cw().is_some();
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("KEY").strong());
-        let (text, fill, color) = if armed {
-            ("COMPUTER KEY", RED, Color32::WHITE)
-        } else {
-            ("RADIO KEY", Color32::from_rgb(40, 34, 20), Color32::LIGHT_GRAY)
-        };
-        let button = egui::Button::new(RichText::new(text).strong().size(15.0).color(color)).min_size(egui::vec2(170.0, 30.0)).fill(fill);
-        if ui.add(button).on_hover_text(if armed { COMPUTER_KEY_HOVER } else { RADIO_KEY_HOVER }).clicked() {
-            set(app, !armed);
-        }
-        if let Some(why) = app.services.cw_disarmed.clone().filter(|_| !armed) {
-            ui.label(RichText::new(format!("back to radio key: {why}")).color(AMBER));
-        }
-    });
+    let (text, fill, color) = if armed {
+        ("COMPUTER KEY", RED, Color32::WHITE)
+    } else {
+        ("RADIO KEY", Color32::from_rgb(40, 34, 20), Color32::LIGHT_GRAY)
+    };
+    let button = egui::Button::new(RichText::new(text).strong().size(15.0).color(color)).min_size(size).fill(fill);
+    if ui.add(button).on_hover_text(if armed { COMPUTER_KEY_HOVER } else { RADIO_KEY_HOVER }).clicked() {
+        set(app, !armed);
+    }
+}
+
+/// Why the computer key let go by itself, if it did.
+pub fn disarm_note(app: &App) -> Option<String> {
+    app.services.cw_disarmed.clone().filter(|_| app.services.cw().is_none()).map(|why| format!("back to radio key: {why}"))
 }
 
 fn set(app: &mut App, computer: bool) {
