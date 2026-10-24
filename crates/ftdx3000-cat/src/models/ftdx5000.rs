@@ -144,6 +144,62 @@ pub(crate) fn encoder(f: &str) -> Vec<String> {
     }
 }
 
+/// `LK` and `FS` with one switch for the dial (FT-950, FT-2000), where
+/// RigHelm's are VFO-A and VFO-B (Sets 0-7, answers 4-7).
+pub(crate) fn ab_switch_down(f: &str) -> Vec<String> {
+    let Some((code, p)) = parts(f) else { return Vec::new() };
+    match p {
+        "" | "0" | "1" => vec![format!("{code}{p};")],
+        "4" | "5" | "6" | "7" => vec![format!("{code}{};", p.parse::<u8>().unwrap() & 1)],
+        _ => Vec::new(),
+    }
+}
+
+pub(crate) fn ab_switch_up(f: &str) -> Vec<String> {
+    let Some((code, p)) = parts(f) else { return Vec::new() };
+    match p {
+        "" => vec![format!("{code};")],
+        "0" | "1" => vec![format!("{code}{};", 4 + p.parse::<u8>().unwrap())],
+        _ => Vec::new(),
+    }
+}
+
+/// `KP` in 50 Hz steps (00-15 = 300-1050 Hz) as RigHelm's 10 Hz (00-75).
+pub(crate) fn pitch50_down(f: &str) -> Vec<String> {
+    let Some((_, p)) = parts(f) else { return Vec::new() };
+    if p.is_empty() {
+        return vec!["KP;".into()];
+    }
+    let Ok(n) = p.parse::<u32>() else { return Vec::new() };
+    vec![format!("KP{:02};", ((n + 2) / 5).min(15))]
+}
+
+pub(crate) fn pitch50_up(f: &str) -> Vec<String> {
+    let Some((_, p)) = parts(f) else { return Vec::new() };
+    if p.is_empty() {
+        return vec!["KP;".into()];
+    }
+    let Ok(n) = p.parse::<u32>() else { return Vec::new() };
+    vec![format!("KP{:02};", n.min(15) * 5)]
+}
+
+/// `SF`: only MHz (1), GRP (2) and MCH (3) are RigHelm's too.
+pub(crate) fn sf_basic(f: &str) -> Vec<String> {
+    match parts(f) {
+        Some((_, p @ ("" | "1" | "2" | "3"))) => vec![format!("SF{p};")],
+        _ => Vec::new(),
+    }
+}
+
+/// `FR` of a radio with a sub receiver (0-3), as RigHelm's (0, 1, 4).
+pub(crate) fn fr_main_sub_down(f: &str) -> Vec<String> {
+    fr_down(f)
+}
+
+pub(crate) fn fr_main_sub_up(f: &str) -> Vec<String> {
+    fr_up(f)
+}
+
 // ------------------------------------------------------------- the FTDX5000's own
 
 /// `DA`: RigHelm's three dimmers (VFO, keypad, TFT) are the radio's VFD,

@@ -87,7 +87,7 @@ const COMMANDS_FFT1: &[&str] = &[
 ];
 
 /// The FTDX3000's bands without 60 m (`BS02` is not used).
-const BANDS: &[Band] = &[
+pub(crate) const BANDS: &[Band] = &[
     types::BANDS[0],
     types::BANDS[1],
     types::BANDS[3],

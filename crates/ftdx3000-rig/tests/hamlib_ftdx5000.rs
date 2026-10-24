@@ -9,7 +9,10 @@
 use ftdx3000_cat::RadioModel;
 use ftdx3000_rig::hamlib_check::{SimPort, answers, available, rigctl};
 
-const MINE: &[&str] = &["ftdx5000", "ftdx1200", "ft950", "ft2000"];
+/// Models whose Hamlib driver sets RFPOWER in percent of 100 W, like RigHelm.
+const RFPOWER_PERCENT: &[&str] = &["ftdx1200", "ftdx1200-fft1", "ft950"];
+
+const MINE: &[&str] = &["ftdx5000", "ftdx1200", "ftdx1200-fft1", "ft950", "ft2000", "ft2000d"];
 
 fn models() -> Vec<&'static RadioModel> {
     let only = std::env::var("RIGHELM_MODELS").unwrap_or_default();
@@ -46,12 +49,22 @@ fn hamlib_split_levels_ptt_rit() {
                 let a = run(m, &port, &["S 0 VFOA", "s"]);
                 assert!(a.iter().any(|l| l == "0"), "{}: split not off: {a:?}", m.key);
 
-                // Levels, as Hamlib scales them.
-                let a = run(m, &port, &["L AF 0.5", "l AF", "L RFPOWER 0.5", "l RFPOWER", "L MICGAIN 0.5", "l MICGAIN"]);
+                // Levels, as Hamlib scales them. Hamlib's FTDX5000 and
+                // FT-2000 drivers scale RFPOWER as 0-255 (its generic Yaesu
+                // default); RigHelm takes their PC as watts (5-200 / 5-100),
+                // so RFPOWER is checked only where the two agree.
+                let mut cmds = vec!["L AF 0.5", "l AF", "L MICGAIN 0.5", "l MICGAIN"];
+                if RFPOWER_PERCENT.contains(&m.key) {
+                    cmds.extend(["L RFPOWER 0.5", "l RFPOWER"]);
+                }
+                let a = run(m, &port, &cmds);
                 let nums: Vec<f32> = a.iter().filter_map(|l| l.parse().ok()).collect();
-                assert_eq!(nums.len(), 3, "{}: {a:?}", m.key);
+                assert_eq!(nums.len(), cmds.len() / 2, "{}: {a:?}", m.key);
                 for v in &nums {
                     assert!((v - 0.5).abs() < 0.02, "{}: level read back {v}: {a:?}", m.key);
+                }
+                if RFPOWER_PERCENT.contains(&m.key) {
+                    assert_eq!(port.core.lock().handle("PC;"), vec!["PC050;"], "{}", m.key);
                 }
 
                 // PTT.
