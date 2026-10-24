@@ -48,11 +48,15 @@ pub fn read_prefix(read: &str) -> String {
 pub struct Ctx {
     pub model: &'static RadioModel,
     pub memo: HashMap<String, String>,
+    /// This translator faces a program ([`TextEmulator`]): `down` gets
+    /// RigHelm's Answers, `up` the program's Sets and Reads. For radios
+    /// whose Set and Answer differ (Elecraft `TX;` vs `TQ1;`).
+    pub program: bool,
 }
 
 impl Ctx {
     pub fn new(model: &'static RadioModel) -> Self {
-        Self { model, memo: HashMap::new() }
+        Self { model, memo: HashMap::new(), program: false }
     }
 
     pub fn remember(&mut self, key: &str, value: impl Into<String>) {
@@ -178,9 +182,15 @@ pub struct TextEmulator {
 
 impl TextEmulator {
     pub fn new(model: &'static RadioModel, spec: &'static TextSpec) -> Self {
-        Self { spec, cx: Ctx::new(model), split: TextSplitter::default() }
+        Self { spec, cx: Ctx { program: true, ..Ctx::new(model) }, split: TextSplitter::default() }
     }
 }
+
+/// `up`, facing a program, can answer a command itself: a frame starting
+/// with this is sent back as is (without the marker), and the marker alone
+/// accepts the command silently. For the radio's own meta-commands that
+/// RigHelm has nothing like (Elecraft `K31;`, `K3;` -> `K31;`, `MN012;`).
+pub const REPLY: &str = "=";
 
 impl Emulator for TextEmulator {
     fn split(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {
@@ -191,6 +201,10 @@ impl Emulator for TextEmulator {
         let f = command::normalize(&String::from_utf8_lossy(raw));
         let ours = (self.spec.up)(&mut self.cx, &f);
         let mut req = Request { tag: (self.spec.answer_prefix)(&f), ..Default::default() };
+        if let Some(reply) = ours.iter().find_map(|c| c.strip_prefix(REPLY)) {
+            req.immediate = Some(reply.as_bytes().to_vec());
+            return req;
+        }
         if ours.is_empty() {
             req.immediate = Some(b"?;".to_vec());
             return req;
