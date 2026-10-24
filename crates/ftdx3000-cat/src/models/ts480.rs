@@ -221,6 +221,7 @@ const ROLES: Roles = Roles {
     cw_pitch_display: None,
     data_other: None,
     data_disp: None,
+    data_psk: false,
 };
 
 /// TS-480SAT: 100 W, with the internal antenna tuner. Detected first (the HX

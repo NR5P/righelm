@@ -28,14 +28,15 @@ pub struct ChannelInfo {
 }
 
 impl ChannelInfo {
-    /// Parse the 24 parameter characters of an `IF`/`OI`/`MR` answer (25
-    /// when the frequency has nine digits, above 99.999999 MHz).
+    /// Parse the 24 parameter characters of an `IF`/`OI`/`MR` answer (25 or
+    /// 26 when the frequency has nine or ten digits).
     pub fn parse(p: &str) -> Option<ChannelInfo> {
         if p.len() < 24 || !p.is_ascii() {
             return None;
         }
-        // The clarifier sign follows the frequency.
-        let f = if matches!(&p[11..12], "+" | "-") { 8 } else { 9 };
+        // The clarifier sign follows the frequency (8 digits, 9 above
+        // 99.999999 MHz, 10 above 999.999999 MHz).
+        let Some(f) = (8..=10).find(|f| matches!(p.get(3 + f..4 + f), Some("+" | "-"))) else { return None };
         if p.len() < 16 + f {
             return None;
         }
@@ -513,6 +514,15 @@ mod tests {
         assert_eq!(s.mode_a, Some(Mode::Usb));
         assert_eq!(s.info_a.channel, 1);
         assert!(s.has("IF"));
+    }
+
+    #[test]
+    fn long_frequencies_in_channel_info() {
+        for hz in [144_174_000u64, 1_296_200_000] {
+            let info = ChannelInfo { channel: 1, freq: hz, mode: Some(Mode::Usb), ..Default::default() };
+            let a = info.to_answer("IF");
+            assert_eq!(ChannelInfo::parse(&a[2..a.len() - 1]).map(|i| i.freq), Some(hz), "{a}");
+        }
     }
 
     #[test]

@@ -128,6 +128,7 @@ pub static TS2000: RadioModel = RadioModel {
         cw_pitch_display: None,
         data_other: None,
         data_disp: None,
+        data_psk: false,
     },
     caps: Caps {
         commands: COMMANDS,

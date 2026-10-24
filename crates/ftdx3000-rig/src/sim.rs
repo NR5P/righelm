@@ -267,7 +267,8 @@ impl SimCore {
         match code {
             _ if !self.model.has(code) => return false,
             "FA" | "FB" => {
-                if !(p.len() == 8 || p.len() == 9 && self.model.freq_max > 99_999_999) || !digits(p) {
+                // 8 digits; 9 or 10 on radios that go that high.
+                if !(p.len() == 8 || p.len() == 9 && self.model.freq_max > 99_999_999 || p.len() == 10 && self.model.freq_max > 999_999_999) || !digits(p) {
                     return false;
                 }
                 let f: u64 = p.parse().unwrap();
