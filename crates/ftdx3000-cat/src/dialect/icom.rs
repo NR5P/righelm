@@ -21,6 +21,7 @@ use std::collections::VecDeque;
 use super::{Back, Dialect, Emulator, Out, Request};
 use crate::command::{self, Request as CatRequest};
 use crate::frame;
+use crate::menu::{Kind, MenuItem};
 use crate::model::RadioModel;
 use crate::state::ChannelInfo;
 use crate::types::{self, Mode};
@@ -63,7 +64,84 @@ pub struct CivSpec {
     pub lock: bool,
     /// Memory names in `1A 00` (characters), 0 = none.
     pub memory_name_len: usize,
+    /// `VD` (VOX delay, ms) is this `1A 05` item: 00-20 = 0.0-2.0 s.
+    pub vox_delay: Option<u32>,
+    /// `KR` (keyer on/off) is this `1A 05` item: 00 straight key,
+    /// 01 bug, 02 paddle (KR1 sets the paddle).
+    pub keyer_type: Option<u32>,
+    /// Menu items that are other CI-V commands than `1A 05` (front-panel
+    /// settings like IP+): the item's `addr` and the command. Their
+    /// addresses are 9000 and up, so they never clash with `1A 05` items.
+    pub extra: &'static [(u32, &'static [u8])],
 }
+
+/// A menu item of an Icom radio: `addr` is the `1A 05` item as its
+/// decimal digits (`1A 05 01 28` = 128), `width` twice its data bytes.
+/// Its number is given by [`numbered`].
+pub const fn item(addr: u32, group: &'static str, name: &'static str, width: u8, kind: Kind) -> MenuItem {
+    MenuItem { num: 0, addr, group, name, width, kind }
+}
+
+/// A menu table with each item numbered by its place (1, 2, ...).
+pub const fn numbered<const N: usize>(raw: &[MenuItem]) -> [MenuItem; N] {
+    let mut out = [raw[0]; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = raw[i];
+        out[i].num = (i + 1) as u16;
+        i += 1;
+    }
+    out
+}
+
+/// RigHelm's number of the menu item at `addr` (compile-time lookup for
+/// the roles).
+pub const fn num_of(menu: &[MenuItem], addr: u32) -> u16 {
+    let mut i = 0;
+    while i < menu.len() {
+        if menu[i].addr == addr {
+            return menu[i].num;
+        }
+        i += 1;
+    }
+    panic!("no such menu item")
+}
+
+/// Kinds the Icom menus share.
+pub const OFF_ON: Kind = Kind::Choice(&["OFF", "ON"]);
+/// `00 00`-`02 55` = 0-100 %.
+pub const PERCENT: Kind = Kind::Percent { max: 255 };
+/// Tone controls: 00-10 = -5..+5.
+pub const TONE: Kind = Kind::Steps { max_code: 10, off_at_zero: false, first: -5, step: 1, unit: "" };
+/// SSB transmit bandwidth: the high digit picks the upper edge, the low
+/// digit the lower edge.
+pub const TBW: Kind = Kind::Coded(&[
+    (0, "100-2500 Hz"),
+    (1, "200-2500 Hz"),
+    (2, "300-2500 Hz"),
+    (3, "500-2500 Hz"),
+    (10, "100-2700 Hz"),
+    (11, "200-2700 Hz"),
+    (12, "300-2700 Hz"),
+    (13, "500-2700 Hz"),
+    (20, "100-2800 Hz"),
+    (21, "200-2800 Hz"),
+    (22, "300-2800 Hz"),
+    (23, "500-2800 Hz"),
+    (30, "100-2900 Hz"),
+    (31, "200-2900 Hz"),
+    (32, "300-2900 Hz"),
+    (33, "500-2900 Hz"),
+]);
+pub const TX_DELAY: Kind = Kind::Choice(&["OFF", "10 ms", "15 ms", "20 ms", "25 ms", "30 ms"]);
+pub const TOT: Kind = Kind::Choice(&["OFF", "3 min", "5 min", "10 min", "20 min", "30 min"]);
+pub const MOD_INPUT: Kind = Kind::Choice(&["MIC", "ACC", "MIC,ACC", "USB", "MIC,USB"]);
+pub const USB_LINE: Kind = Kind::Choice(&["OFF", "DTR", "RTS"]);
+pub const NOTCH_SW: Kind = Kind::Choice(&["Auto", "Manual", "Auto/Manual"]);
+pub const AVERAGING: Kind = Kind::Choice(&["OFF", "2", "3", "4"]);
+pub const FILL: Kind = Kind::Choice(&["Fill", "Fill+Line"]);
+pub const SPEED3: Kind = Kind::Choice(&["Slow", "Mid", "Fast"]);
+pub const KEY_FRONT: Kind = Kind::Choice(&["M-CH UP", "M-CH DOWN", "PRESET", "Memory 1", "Memory 2", "Memory 3", "Memory 4"]);
 
 /// Typical Icom meter scales (IC-7300 family).
 pub const S_CAL: [(u8, f32); 3] = [(0, -54.0), (120, 0.0), (241, 60.0)];
@@ -697,20 +775,29 @@ impl Icom {
             ("EX", _) => {
                 let Some(num) = p.get(..3).and_then(|n| n.parse::<u16>().ok()) else { return Vec::new() };
                 let Some(item) = self.model.menu_item(num) else { return Vec::new() };
-                let mut body = vec![0x1A, 0x05];
-                body.extend(bcd(item.addr as u64, 2));
+                let mut body = menu_cmd(self.spec, item.addr);
                 if read {
                     return vec![self.msg(body, Want::As("EX"), true)];
                 }
-                let raw = &p[3..];
-                let data = match item.kind {
-                    crate::menu::Kind::Text { .. } => raw.trim_end().as_bytes().to_vec(),
-                    _ => match text_bcd(raw.trim()) {
-                        Some(b) => b,
-                        None => return Vec::new(),
-                    },
-                };
+                let Some(data) = menu_data(item, &p[3..]) else { return Vec::new() };
                 body.extend(data);
+                vec![self.set(body)]
+            }
+            ("VD", _) if self.spec.vox_delay.is_some() => {
+                let mut body = menu_cmd(self.spec, self.spec.vox_delay.unwrap_or(0));
+                if read {
+                    return vec![self.msg(body, Want::As("VD"), true)];
+                }
+                let Some(ms) = num(p) else { return Vec::new() };
+                body.extend(bcd(((ms as f64 / 100.0).round() as i64).clamp(0, 20) as u64, 1));
+                vec![self.set(body)]
+            }
+            ("KR", _) if self.spec.keyer_type.is_some() => {
+                let mut body = menu_cmd(self.spec, self.spec.keyer_type.unwrap_or(0));
+                if read {
+                    return vec![self.msg(body, Want::As("KR"), true)];
+                }
+                body.push(if p == "0" { 0x00 } else { 0x02 });
                 vec![self.set(body)]
             }
             ("BS", false) => {
@@ -749,6 +836,10 @@ impl Icom {
     fn up(&mut self, body: &[u8], want: Option<&Want>) -> Vec<String> {
         let Some(&cmd) = body.first() else { return Vec::new() };
         let d = &body[1..];
+        // Menu items that are commands of their own.
+        if let Some((item, n)) = extra_item(self.model, self.spec, body) {
+            return if body.len() > n { vec![format!("EX{:03}{};", item.num, menu_raw(item, &body[n..]))] } else { Vec::new() };
+        }
         // Commands with a fixed subcommand.
         if let Some(sm) = simple_by_cmd(body) {
             let Some(v) = sm.from_radio(&body[sm.cmd.len()..], self.spec) else { return Vec::new() };
@@ -865,12 +956,16 @@ impl Icom {
                 }
                 Some(0x05) => {
                     let Some(addr) = d.get(1..3).and_then(from_bcd) else { return Vec::new() };
+                    match want {
+                        Some(Want::As("VD")) => {
+                            let Some(n) = d.get(3..4).and_then(from_bcd) else { return Vec::new() };
+                            return vec![format!("VD{:04};", n * 100)];
+                        }
+                        Some(Want::As("KR")) => return vec![format!("KR{};", (d.get(3).copied().unwrap_or(0) != 0) as u8)],
+                        _ => {}
+                    }
                     let Some(item) = self.model.menu.iter().find(|m| m.addr as u64 == addr) else { return Vec::new() };
-                    let raw = match item.kind {
-                        crate::menu::Kind::Text { max } => format!("{:<max$}", String::from_utf8_lossy(&d[3..])),
-                        _ => bcd_text(&d[3..]),
-                    };
-                    vec![format!("EX{:03}{raw};", item.num)]
+                    vec![format!("EX{:03}{};", item.num, menu_raw(item, &d[3..]))]
                 }
                 Some(0x06) => {
                     // DATA mode of the selected VFO.
@@ -914,6 +1009,42 @@ impl Icom {
             Compose::If => info(false).map(|i| vec![i.to_answer("IF")]).unwrap_or_default(),
             Compose::Oi => info(true).map(|i| vec![i.to_answer("OI")]).unwrap_or_default(),
         }
+    }
+}
+
+/// The command that reads a menu item (and, with the value after it, sets
+/// it): `1A 05 xx xx`, or the item's own command for the extra ones.
+fn menu_cmd(spec: &CivSpec, addr: u32) -> Vec<u8> {
+    match spec.extra.iter().find(|(a, _)| *a == addr) {
+        Some((_, cmd)) => cmd.to_vec(),
+        None => {
+            let mut body = vec![0x1A, 0x05];
+            body.extend(bcd(addr as u64, 2));
+            body
+        }
+    }
+}
+
+/// The extra menu item (not `1A 05`) a CI-V frame is about, and the length
+/// of its command.
+fn extra_item(model: &RadioModel, spec: &CivSpec, body: &[u8]) -> Option<(&'static crate::menu::MenuItem, usize)> {
+    let (addr, cmd) = spec.extra.iter().find(|(_, c)| body.len() >= c.len() && body[..c.len()] == **c)?;
+    Some((model.menu.iter().find(|m| m.addr == *addr)?, cmd.len()))
+}
+
+/// A menu item's value as RigHelm's raw text (BCD digits, or text).
+fn menu_raw(item: &crate::menu::MenuItem, data: &[u8]) -> String {
+    match item.kind {
+        Kind::Text { max } => format!("{:<max$}", String::from_utf8_lossy(data)),
+        _ => bcd_text(data),
+    }
+}
+
+/// RigHelm's raw text of a menu item as the radio's data bytes.
+fn menu_data(item: &crate::menu::MenuItem, raw: &str) -> Option<Vec<u8>> {
+    match item.kind {
+        Kind::Text { .. } => Some(raw.trim_end().as_bytes().to_vec()),
+        _ => text_bcd(raw.trim()),
     }
 }
 
@@ -1114,6 +1245,16 @@ impl Emulator for IcomEmulator {
             r
         };
         let ng = Request { immediate: Some(self.ng()), ..Default::default() };
+        // Menu items that are commands of their own.
+        if let Some((item, n)) = extra_item(self.model, self.spec, b) {
+            if b.len() == n {
+                req.reads.push(crate::menu::read_cmd(item.num));
+                req.tag = "menu".into();
+                return req;
+            }
+            req.sets.push(format!("EX{:03}{};", item.num, menu_raw(item, &b[n..])));
+            return ok(req, self);
+        }
         // One-setting commands.
         if let Some(sm) = simple_by_cmd(b) {
             let rest = &b[sm.cmd.len()..];
@@ -1400,11 +1541,7 @@ impl Emulator for IcomEmulator {
                         req.reads.push(crate::menu::read_cmd(item.num));
                         req.tag = "menu".into();
                     } else {
-                        let raw = match item.kind {
-                            crate::menu::Kind::Text { max } => format!("{:<max$}", String::from_utf8_lossy(&d[3..])),
-                            _ => bcd_text(&d[3..]),
-                        };
-                        req.sets.push(format!("EX{:03}{raw};", item.num));
+                        req.sets.push(format!("EX{:03}{};", item.num, menu_raw(item, &d[3..])));
                         return ok(req, self);
                     }
                 }
@@ -1517,14 +1654,8 @@ impl Emulator for IcomEmulator {
             "menu" => {
                 let Some(num) = p.get(..3).and_then(|n| n.parse::<u16>().ok()) else { return self.ng() };
                 let Some(item) = self.model.menu_item(num) else { return self.ng() };
-                let raw = &p[3..];
-                match item.kind {
-                    crate::menu::Kind::Text { .. } => body.extend(raw.trim_end().as_bytes()),
-                    _ => match text_bcd(raw.trim()) {
-                        Some(b) => body.extend(b),
-                        None => return self.ng(),
-                    },
-                }
+                let Some(data) = menu_data(item, &p[3..]) else { return self.ng() };
+                body.extend(data);
             }
             t if t.starts_with("setdata") => {
                 // The program turned DATA on/off: keep the mode, change DATA.
@@ -1561,5 +1692,225 @@ impl Emulator for IcomEmulator {
             _ => return None,
         };
         Some(Civ::bytes(0x00, self.addr, &body))
+    }
+}
+
+/// Helpers for the models' tests: literal CI-V frames through the
+/// translator and the emulator.
+#[cfg(test)]
+pub mod testing {
+    use super::*;
+    use crate::model::Proto;
+
+    /// `"FE FE 94 E0 03 FD"` as bytes.
+    pub fn hex(s: &str) -> Vec<u8> {
+        s.split_whitespace().map(|b| u8::from_str_radix(b, 16).unwrap()).collect()
+    }
+
+    pub fn spec(m: &'static RadioModel) -> &'static CivSpec {
+        match m.proto {
+            Proto::CiV(s) => s,
+            _ => panic!("{} is not CI-V", m.key),
+        }
+    }
+
+    pub fn radio(m: &'static RadioModel) -> Icom {
+        Icom::new(m, spec(m))
+    }
+
+    pub fn emulator(m: &'static RadioModel) -> IcomEmulator {
+        IcomEmulator::new(m, spec(m))
+    }
+
+    /// The CI-V frames (as hex text) a RigHelm command becomes.
+    pub fn down(r: &mut Icom, f: &str) -> Vec<String> {
+        r.command(f)
+            .into_iter()
+            .map(|o| match o {
+                Out::Radio { bytes, .. } => bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" "),
+                Out::Answer(a) => a,
+            })
+            .collect()
+    }
+
+    /// RigHelm frames for one frame from the radio (hex text).
+    pub fn up(r: &mut Icom, frame: &str) -> Vec<String> {
+        r.answer(&hex(frame)).frames
+    }
+
+    /// A RigHelm Set goes out as CI-V and the emulator turns it back into
+    /// the same Set.
+    pub fn round_trip_set(m: &'static RadioModel, f: &str) {
+        let mut r = radio(m);
+        let mut e = emulator(m);
+        let mut sets = Vec::new();
+        for o in r.command(f) {
+            let Out::Radio { bytes, .. } = o else { panic!("{}: {f} not sent: {o:?}", m.key) };
+            let req = e.request(&bytes);
+            assert!(req.reads.is_empty(), "{}: {f} read {:?}", m.key, req.reads);
+            sets.extend(req.sets);
+        }
+        assert_eq!(sets, vec![f.to_string()], "{}: {f}", m.key);
+    }
+
+    /// A RigHelm Read goes out as CI-V, the emulator asks RigHelm for
+    /// `answer`, and the radio side reads that answer back.
+    pub fn round_trip_read(m: &'static RadioModel, read: &str, answer: &str) {
+        let mut r = radio(m);
+        let mut e = emulator(m);
+        let mut got = Vec::new();
+        for o in r.command(read) {
+            match o {
+                Out::Radio { bytes, .. } => {
+                    let req = e.request(&bytes);
+                    let reply = if req.reads.is_empty() {
+                        e.respond(&req, &[])
+                    } else {
+                        let answers: Vec<Option<String>> = req.reads.iter().map(|_| Some(answer.to_string())).collect();
+                        e.respond(&req, &answers)
+                    };
+                    got.extend(r.answer(&reply).frames);
+                }
+                Out::Answer(a) => got.push(a),
+            }
+        }
+        assert!(got.iter().any(|g| g == answer), "{}: {read} gave {got:?}, wanted {answer}", m.key);
+    }
+
+    /// Every menu item's first and last choice goes out and comes back.
+    pub fn menu_round_trips(m: &'static RadioModel) {
+        for item in m.menu {
+            let codes: Vec<i32> = match item.kind {
+                Kind::Text { .. } => {
+                    round_trip_set(m, &item.set_cmd(&crate::menu::Value::Text("AB1CD".into()), None));
+                    continue;
+                }
+                Kind::Num { min, max, .. } => vec![min, max],
+                Kind::Percent { max } => vec![0, max],
+                _ => item.options().iter().map(|o| o.0).collect(),
+            };
+            for c in [codes.first(), codes.last()].into_iter().flatten() {
+                round_trip_set(m, &item.set_cmd(&crate::menu::Value::Int(*c), None));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::*;
+    use super::*;
+    use crate::models::ic7300::IC7300;
+
+    #[test]
+    fn frames_and_bcd() {
+        assert_eq!(bcd(255, 2), vec![0x02, 0x55]);
+        assert_eq!(from_bcd(&[0x01, 0x28]), Some(128));
+        assert_eq!(freq_bytes(14_074_000), hex("00 40 07 14 00"));
+        assert_eq!(freq_from(&hex("00 40 07 14 00")), Some(14_074_000));
+        assert_eq!(text_bcd("0255"), Some(vec![0x02, 0x55]));
+        assert_eq!(bcd_text(&[0x02, 0x55]), "0255");
+        let mut s = CivSplitter::default();
+        assert_eq!(s.split(&hex("FE FE FE FE 94 E0 03 FD FE FE")), vec![hex("FE FE 94 E0 03 FD")]);
+    }
+
+    #[test]
+    fn ic7300_literal_frames() {
+        let mut r = radio(&IC7300);
+        assert_eq!(down(&mut r, "FA14074000;"), ["FE FE 94 E0 25 00 00 40 07 14 00 FD"]);
+        assert!(up(&mut r, "FE FE E0 94 FB FD").is_empty());
+        assert_eq!(down(&mut r, "FB;"), ["FE FE 94 E0 25 01 FD"]);
+        assert_eq!(up(&mut r, "FE FE E0 94 25 01 00 60 07 14 00 FD"), ["FB14076000;"]);
+        assert_eq!(down(&mut r, "MD0C;"), ["FE FE 94 E0 26 00 01 01 01 FD"]);
+        up(&mut r, "FE FE E0 94 FB FD");
+        assert_eq!(down(&mut r, "MD0;"), ["FE FE 94 E0 26 00 FD"]);
+        assert_eq!(up(&mut r, "FE FE E0 94 26 00 03 00 02 FD"), ["MD03;"]);
+        assert_eq!(down(&mut r, "AG0128;"), ["FE FE 94 E0 14 01 01 28 FD"]);
+        up(&mut r, "FE FE E0 94 FB FD");
+        // 50 W of 100: 01 28 (half of 02 55).
+        assert_eq!(down(&mut r, "PC050;"), ["FE FE 94 E0 14 0A 01 28 FD"]);
+        up(&mut r, "FE FE E0 94 FB FD");
+        // S9 = 01 20 on the IC-7300, 130 on RigHelm's scale.
+        assert_eq!(down(&mut r, "SM0;"), ["FE FE 94 E0 15 02 FD"]);
+        assert_eq!(up(&mut r, "FE FE E0 94 15 02 01 20 FD"), ["SM0130;"]);
+        assert_eq!(down(&mut r, "RA01;"), ["FE FE 94 E0 11 20 FD"]);
+        up(&mut r, "FE FE E0 94 FB FD");
+        assert_eq!(down(&mut r, "TX1;"), ["FE FE 94 E0 1C 00 01 FD"]);
+        up(&mut r, "FE FE E0 94 FB FD");
+        assert_eq!(down(&mut r, "BS05;"), ["FE FE 94 E0 1A 01 05 01 FD"]);
+        // A refusal is "?;".
+        assert_eq!(up(&mut r, "FE FE E0 94 FA FD"), ["?;"]);
+        // CI-V Transceive broadcast of the frequency.
+        assert_eq!(up(&mut r, "FE FE 00 94 00 00 40 07 07 00 FD"), ["FA07074000;"]);
+    }
+
+    #[test]
+    fn ic7300_menu_vox_delay_keyer_and_extras() {
+        let m = &IC7300;
+        let mut r = radio(m);
+        let n = num_of(m.menu, 71);
+        assert_eq!(down(&mut r, &format!("EX{n:03};")), ["FE FE 94 E0 1A 05 00 71 FD"]);
+        assert_eq!(up(&mut r, "FE FE E0 94 1A 05 00 71 01 FD"), [format!("EX{n:03}01;")]);
+        let beep = num_of(m.menu, 21);
+        assert_eq!(down(&mut r, &format!("EX{beep:03}0128;")), ["FE FE 94 E0 1A 05 00 21 01 28 FD"]);
+        up(&mut r, "FE FE E0 94 FB FD");
+        let call = num_of(m.menu, 91);
+        assert_eq!(down(&mut r, &format!("EX{call:03}W1AW      ;")), ["FE FE 94 E0 1A 05 00 91 57 31 41 57 FD"]);
+        up(&mut r, "FE FE E0 94 FB FD");
+        let ipp = num_of(m.menu, 9001);
+        assert_eq!(down(&mut r, &format!("EX{ipp:03}01;")), ["FE FE 94 E0 1A 07 01 FD"]);
+        up(&mut r, "FE FE E0 94 FB FD");
+        assert_eq!(down(&mut r, &format!("EX{ipp:03};")), ["FE FE 94 E0 1A 07 FD"]);
+        assert_eq!(up(&mut r, "FE FE E0 94 1A 07 01 FD"), [format!("EX{ipp:03}01;")]);
+        assert_eq!(down(&mut r, "VD0500;"), ["FE FE 94 E0 1A 05 01 91 05 FD"]);
+        up(&mut r, "FE FE E0 94 FB FD");
+        assert_eq!(down(&mut r, "VD;"), ["FE FE 94 E0 1A 05 01 91 FD"]);
+        assert_eq!(up(&mut r, "FE FE E0 94 1A 05 01 91 05 FD"), ["VD0500;"]);
+        assert_eq!(down(&mut r, "KR1;"), ["FE FE 94 E0 1A 05 01 64 02 FD"]);
+        up(&mut r, "FE FE E0 94 FB FD");
+        assert_eq!(down(&mut r, "KR;"), ["FE FE 94 E0 1A 05 01 64 FD"]);
+        assert_eq!(up(&mut r, "FE FE E0 94 1A 05 01 64 01 FD"), ["KR1;"]);
+    }
+
+    #[test]
+    fn ic7300_emulator_literal_frames() {
+        let mut e = emulator(&IC7300);
+        let req = e.request(&hex("FE FE 94 E0 25 00 FD"));
+        assert_eq!(req.reads, ["FA;"]);
+        assert_eq!(e.respond(&req, &[Some("FA07074000;".into())]), hex("FE FE E0 94 25 00 00 40 07 07 00 FD"));
+        let req = e.request(&hex("FE FE 94 E0 26 00 01 01 02 FD"));
+        assert_eq!(req.sets, ["MD0C;"]);
+        let req = e.request(&hex("FE FE 94 E0 1A 05 00 71 00 FD"));
+        assert_eq!(req.sets, [format!("EX{:03}00;", num_of(IC7300.menu, 71))]);
+        let req = e.request(&hex("FE FE 94 E0 19 00 FD"));
+        assert_eq!(req.immediate, Some(hex("FE FE E0 94 19 00 94 FD")));
+    }
+
+    #[test]
+    fn ic7300_round_trips() {
+        let m = &IC7300;
+        for f in [
+            "FA14074000;", "FB07074000;", "MD01;", "MD02;", "MD03;", "MD07;", "MD05;", "MD04;", "MD06;", "MD09;", "MD08;", "MD0C;", "MD0H;", "MD0A;",
+            "AG0128;", "RG0200;", "SQ0010;", "PC050;", "MG040;", "KS022;", "PA01;", "PA02;", "NB01;", "NR01;", "RL008;", "BC01;", "PR01;", "VX1;",
+            "BI1;", "RT1;", "XT0;", "SH010;", "GT01;", "GT03;", "RA01;", "RA00;", "TX1;", "TX0;", "AC001;", "CO0002;", "CO0230;", "LK1;", "PB01;",
+        ] {
+            round_trip_set(m, f);
+        }
+        menu_round_trips(m);
+        for (read, answer) in [
+            ("FA;", "FA14074000;"),
+            ("FB;", "FB14076000;"),
+            ("MD0;", "MD0C;"),
+            ("AG0;", "AG0128;"),
+            ("PC;", "PC050;"),
+            ("KS;", "KS022;"),
+            ("GT0;", "GT02;"),
+            ("RA0;", "RA01;"),
+            ("SH0;", "SH028;"),
+            ("TX;", "TX0;"),
+            ("FT;", "FT1;"),
+        ] {
+            round_trip_read(m, read, answer);
+        }
     }
 }
