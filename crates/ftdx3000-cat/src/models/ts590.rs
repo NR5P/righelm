@@ -123,6 +123,10 @@ pub fn is_data(m: Mode) -> bool {
 
 /// The current mode, from the last `MD`/`DA`/`IF` seen.
 pub fn cur_mode(cx: &Ctx) -> Option<Mode> {
+    // The TS-890/990 keep RigHelm's mode code (their OM has DATA modes).
+    if let Some(m) = recall_char(cx, "rhm") {
+        return Mode::from_code(m);
+    }
     rh_mode(recall_char(cx, "md")?, cx.recall("da") == Some("1"))
 }
 
@@ -241,7 +245,9 @@ fn width_cmd(cx: &Ctx) -> Option<&'static str> {
     }
 }
 
-fn down(cx: &mut Ctx, f: &str) -> Vec<String> {
+/// RigHelm frame -> TS-590 frame(s). Also the TS-890/990 translators'
+/// fallback for commands that are the same there.
+pub fn down(cx: &mut Ctx, f: &str) -> Vec<String> {
     let Some((code, p)) = parts(f) else { return Vec::new() };
     if !p.is_ascii() {
         return Vec::new();
@@ -249,6 +255,14 @@ fn down(cx: &mut Ctx, f: &str) -> Vec<String> {
     let read = is_read(f);
     let emu = emulating(cx);
     let tail = p.get(1..).unwrap_or("");
+    if emu && !read && code == "ID" && cx.memo.remove("swallow").is_some() {
+        return Vec::new();
+    }
+    // A program's FV; (firmware version).
+    if emu && !read && matches!(code.as_str(), "ID" | "EX") && cx.memo.remove("fvq").is_some() {
+        let v = if code == "EX" { p.get(3..).unwrap_or("").trim() } else { "" };
+        return one(format!("FV{};", if v.is_empty() { "1.00" } else { v }));
+    }
     // Answers for a program's IF read, before RigHelm's IF itself.
     if emu && !read && cx.recall("ifq").is_some() {
         match (code.as_str(), at(p, 0)) {
@@ -363,12 +377,7 @@ fn down(cx: &mut Ctx, f: &str) -> Vec<String> {
             _ => Vec::new(),
         },
         "IF" if read => one("IF;"),
-        "IF" if cx.recall("sf") == Some("0") => {
-            cx.remember("sf", "");
-            let Some(info) = ChannelInfo::parse(p) else { return Vec::new() };
-            one(format!("SF0{:011}{};", info.freq, sf_mode(info.mode.unwrap_or(Mode::Usb))))
-        }
-        "IF" => info_down(cx, p),
+        "IF" => if_down(cx, p, false),
         "KP" => {
             let a = pitch_addr(cx);
             match pnum::<u32>(p) {
@@ -472,7 +481,8 @@ fn down(cx: &mut Ctx, f: &str) -> Vec<String> {
     }
 }
 
-fn up(cx: &mut Ctx, f: &str) -> Vec<String> {
+/// TS-590 frame -> RigHelm frame(s) (see [`down`]).
+pub fn up(cx: &mut Ctx, f: &str) -> Vec<String> {
     let Some((code, p)) = parts(f) else { return Vec::new() };
     if !p.is_ascii() {
         return Vec::new();
@@ -494,6 +504,7 @@ fn up(cx: &mut Ctx, f: &str) -> Vec<String> {
             }
         }
         "DN" | "UP" => one(format!("{code};")),
+        "FV" if p.is_empty() => fv_read(cx, if sg(cx) { Some(1) } else { None }),
         "VV" => one("AB;"),
         "SV" => one("MA;"),
         "AC" if p.is_empty() => rd(cx, &["AC;"]),
@@ -567,12 +578,8 @@ fn up(cx: &mut Ctx, f: &str) -> Vec<String> {
             '2' | '3' => one("GT01;"),
             _ => Vec::new(),
         },
-        // RigHelm's IF has no TX state, receiver or split: ask for those first.
-        "IF" if p.is_empty() => {
-            cx.remember("ifq", "1");
-            rd(cx, &["FR;", "FT;", "TX;", "IF;"])
-        }
-        "IF" => info_up(cx, p),
+        "IF" if p.is_empty() => if_read(cx),
+        "IF" => info_up(cx, p, false),
         "LK" if p.is_empty() => rd(cx, &["LK;"]),
         "LK" => one(format!("LK{};", 4 + (c0 == '1') as u8)),
         "MC" if p.is_empty() => rd(cx, &["MC;"]),
@@ -647,16 +654,37 @@ fn up(cx: &mut Ctx, f: &str) -> Vec<String> {
     }
 }
 
-/// A mode as the `SF` command's code (DATA modes C-F).
+/// A mode as the code of the `SF` command (and the TS-890/990's `OM`):
+/// the `MD` digits, A PSK, C-F the DATA modes.
+pub fn om_code(m: Mode) -> Option<char> {
+    Some(match m {
+        Mode::Psk => 'A',
+        Mode::DataLsb => 'C',
+        Mode::DataUsb => 'D',
+        Mode::DataFm => 'E',
+        Mode::DataAm => 'F',
+        m => kw_mode(m)?.0,
+    })
+}
+
+pub fn om_mode(c: char) -> Option<Mode> {
+    Some(match c.to_ascii_uppercase() {
+        'A' => Mode::Psk,
+        'C' => Mode::DataLsb,
+        'D' => Mode::DataUsb,
+        'E' => Mode::DataFm,
+        'F' => Mode::DataAm,
+        c => rh_mode(c, false)?,
+    })
+}
+
 pub fn sf_mode(m: Mode) -> char {
-    match kw_mode(m) {
-        Some(('1', Some(true))) => 'C',
-        Some(('2', Some(true))) => 'D',
-        Some(('4', Some(true))) => 'E',
-        Some(('5', Some(true))) => 'F',
-        Some((k, _)) => k,
-        None => '2',
-    }
+    om_code(m).unwrap_or('2')
+}
+
+/// Remember the current mode (RigHelm's code) for radios with `OM`.
+pub fn remember_mode(cx: &mut Ctx, m: Mode) {
+    cx.remember("rhm", m.code().to_string());
 }
 
 /// The radio's `SF` (a VFO's frequency and mode, from a program): reads
@@ -671,24 +699,45 @@ pub fn sf_up(cx: &mut Ctx, p: &str) -> Vec<String> {
         return rd(cx, &[if vfo == '0' { "IF;" } else { "FB;" }]);
     }
     let (Some(hz), Some(c)) = (p.get(1..12).and_then(pnum::<u64>), p.as_bytes().get(12).map(|&b| b as char)) else { return Vec::new() };
-    let (md, data) = match c {
-        'C' => ('1', true),
-        'D' => ('2', true),
-        'E' => ('4', true),
-        'F' => ('5', true),
-        k => (k, false),
-    };
-    let Some(m) = rh_mode(md, data) else { return Vec::new() };
+    let Some(m) = om_mode(c).filter(|m| cx.model.modes.contains(m)) else { return Vec::new() };
     let mut out = vec![format!("F{}{hz:08};", if vfo == '0' { 'A' } else { 'B' })];
     // RigHelm sets the mode of the VFO in use.
     if recall_char(cx, "vfo").unwrap_or('0') == vfo {
-        cx.remember("md", md.to_string());
-        if has_data(md) {
-            cx.remember("da", if data { "1" } else { "0" });
+        if cx.recall("rhm").is_some() {
+            remember_mode(cx, m);
+        } else if let Some((md, data)) = kw_mode(m) {
+            cx.remember("md", md.to_string());
+            if let Some(d) = data {
+                cx.remember("da", if d { "1" } else { "0" });
+            }
         }
         out.push(format!("MD0{};", m.code()));
     }
     out
+}
+
+/// A program's `IF;`: RigHelm's IF has no TX state, receiver or split, so
+/// those are read first (their answers only fill in the radio's IF).
+pub fn if_read(cx: &mut Ctx) -> Vec<String> {
+    cx.remember("ifq", "1");
+    rd(cx, &["FR;", "FT;", "TX;", "IF;"])
+}
+
+/// A program's `FV;`: the firmware version menu item (`num`), if the radio
+/// has one.
+pub fn fv_read(cx: &mut Ctx, num: Option<u16>) -> Vec<String> {
+    cx.remember("fvq", "1");
+    match num {
+        Some(n) => rd(cx, &[&format!("EX{n:03};")]),
+        None => rd(cx, &["ID;"]),
+    }
+}
+
+/// A program's Set RigHelm has nothing for, accepted without effect (like
+/// the radio would): RigHelm reads `ID;` and the answer is dropped.
+pub fn ack(cx: &mut Ctx) -> Vec<String> {
+    cx.remember("swallow", "1");
+    one("ID;")
 }
 
 /// RigHelm `MD0x` Set/Answer or `MD0;` Read.
@@ -771,7 +820,8 @@ fn width_up(cx: &mut Ctx, code: &str, p: &str) -> Vec<String> {
         return one("SH0;");
     }
     if width_cmd(cx) != Some(code) {
-        return Vec::new();
+        // The other edge: the radio would take it.
+        return if emulating(cx) { ack(cx) } else { Vec::new() };
     }
     let Some(v) = pnum::<u32>(p) else { return Vec::new() };
     let i = if code == "FW" { WIDTH.iter().rposition(|&w| w <= v).unwrap_or(0) as u32 } else { v.min(13) };
@@ -845,9 +895,26 @@ fn ex_up(cx: &mut Ctx, p: &str) -> Vec<String> {
     out
 }
 
+/// RigHelm's `IF` answer as the radio's `IF` (or `SF0` for a program's
+/// `SF0;`). `om`: the mode field is an `OM` code (TS-890/990).
+pub fn if_down(cx: &mut Ctx, p: &str, om: bool) -> Vec<String> {
+    cx.memo.remove("ifq");
+    if cx.memo.remove("rfq").is_some() {
+        // A program's RF; (TS-890/990: RIT/XIT offset).
+        let Some(info) = ChannelInfo::parse(p) else { return Vec::new() };
+        return one(format!("RF{}{:04};", (info.clar_offset < 0) as u8, info.clar_offset.unsigned_abs().min(9999)));
+    }
+    if cx.recall("sf") == Some("0") {
+        cx.remember("sf", "");
+        let Some(info) = ChannelInfo::parse(p) else { return Vec::new() };
+        return one(format!("SF0{:011}{};", info.freq, sf_mode(info.mode.unwrap_or(Mode::Usb))));
+    }
+    info_down(cx, p, om)
+}
+
 /// The radio's `IF` answer (35 characters) as RigHelm's `IF` (or `OI`
 /// when VFO B is in use), `TX` and `CT0`.
-fn info_up(cx: &mut Ctx, p: &str) -> Vec<String> {
+pub fn info_up(cx: &mut Ctx, p: &str, om: bool) -> Vec<String> {
     if p.len() < 35 {
         return Vec::new();
     }
@@ -864,7 +931,13 @@ fn info_up(cx: &mut Ctx, p: &str) -> Vec<String> {
     if at(p, 30) == '0' && func != '2' {
         cx.remember("ft", func.to_string());
     }
-    let mode = rh_mode(md, cx.recall("da") == Some("1") && has_data(md)).map(|m| m.code()).unwrap_or('0');
+    let m = if om { om_mode(md) } else { rh_mode(md, cx.recall("da") == Some("1") && has_data(md)) };
+    if om {
+        if let Some(m) = m {
+            remember_mode(cx, m);
+        }
+    }
+    let mode = m.map(|m| m.code()).unwrap_or('0');
     let ctcss = rh_tone_mode(at(p, 31));
     let tone = rh_tone(p[32..34].parse().unwrap_or(0));
     let mem = (func == '2') as u8;
@@ -887,13 +960,20 @@ fn info_up(cx: &mut Ctx, p: &str) -> Vec<String> {
 }
 
 /// RigHelm's `IF` answer as the radio's (for a program).
-fn info_down(cx: &mut Ctx, p: &str) -> Vec<String> {
+fn info_down(cx: &mut Ctx, p: &str, om: bool) -> Vec<String> {
     let Some(info) = ChannelInfo::parse(p) else { return Vec::new() };
-    let (md, data) = info.mode.and_then(kw_mode).unwrap_or(('2', None));
-    cx.remember("md", md.to_string());
-    if let Some(d) = data {
-        cx.remember("da", if d { "1" } else { "0" });
-    }
+    let md = if om {
+        let m = info.mode.unwrap_or(Mode::Usb);
+        remember_mode(cx, m);
+        om_code(m).unwrap_or('2')
+    } else {
+        let (md, data) = info.mode.and_then(kw_mode).unwrap_or(('2', None));
+        cx.remember("md", md.to_string());
+        if let Some(d) = data {
+            cx.remember("da", if d { "1" } else { "0" });
+        }
+        md
+    };
     let tx = cx.recall("tx") == Some("1");
     let func = if info.mem_mode != 0 { '2' } else { recall_char(cx, "vfo").unwrap_or('0') };
     let sign = if info.clar_offset < 0 { '-' } else { '+' };
@@ -1470,6 +1550,8 @@ mod tests {
         assert_eq!(d(c, "FR0;"), vec!["FR0;"]);
         assert_eq!(u(c, "EX0670000;"), vec!["EX068;"]);
         assert_eq!(d(c, "AC002;"), vec!["AC011;"]);
+        assert_eq!(u(c, "FV;"), vec!["EX001;"]);
+        assert_eq!(d(c, "EX0011.05;"), vec!["FV1.05;"]);
         assert_eq!(u(c, "SL;"), vec!["SH0;"]);
         assert_eq!(d(c, "SH007;"), vec!["SL00;"]);
         assert_eq!(u(c, "SH;"), vec!["SH0;"]);
