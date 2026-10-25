@@ -524,7 +524,10 @@ impl RemoteServer {
                         let Some(c) = &capture else { continue };
                         if let Ok(frame) = c.frames.recv_timeout(Duration::from_millis(200)) {
                             if !pacer.admit(frame.len()) {
-                                // Ahead of real time: wait instead of flooding.
+                                // Ahead of real time: drop this frame instead of
+                                // flooding, but count it so clients see a gap
+                                // and fade across it rather than splice.
+                                seq = seq.wrapping_add(1);
                                 thread::sleep(Duration::from_millis(5));
                                 continue;
                             }
