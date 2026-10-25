@@ -406,7 +406,7 @@ fn wine_section(app: &mut App, ui: &mut Ui) {
     section(ui, "Wine COM port mapping", |ui| {
         let st = &mut app.sharing;
         if st.wine_prefixes.is_empty() {
-            ui.label(RichText::new("No Wine prefixes found (looked for */dosdevices under your home folder).").weak());
+            ui.label(RichText::new("No Wine prefixes found (looked in ~/.wine, $WINEPREFIX, and the CrossOver, Whisky, PlayOnMac, PlayOnLinux, Bottles and Lutris folders).").weak());
             return;
         }
         let ports: Vec<String> = st.ports.iter().filter(|p| p.enabled).map(|p| p.name.clone()).collect();

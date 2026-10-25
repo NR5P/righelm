@@ -251,34 +251,44 @@ pub use crate::services::default_link_dir;
 
 
 /// Wine prefixes found on this machine (directories containing `dosdevices`).
+///
+/// Only the places Wine and its front ends keep prefixes are checked: walking
+/// the home folder makes macOS ask for Photos, Documents, Contacts and more.
 pub fn find_wine_prefixes() -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return out };
-    if let Some(p) = std::env::var_os("WINEPREFIX").map(PathBuf::from) {
-        out.push(p);
+    let mut add = |dir: PathBuf| {
+        if dir.join("dosdevices").is_dir() && !out.contains(&dir) {
+            out.push(dir);
+        }
+    };
+    if let Some(p) = std::env::var_os("WINEPREFIX") {
+        add(PathBuf::from(p));
     }
-    fn walk(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
-        if dir.join("dosdevices").is_dir() && !out.iter().any(|p| p == dir) {
-            out.push(dir.to_path_buf());
-            return;
-        }
-        if depth == 0 {
-            return;
-        }
-        let Ok(rd) = fs::read_dir(dir) else { return };
-        for e in rd.flatten() {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            if e.file_type().map(|t| t.is_dir()).unwrap_or(false)
-                && !matches!(name.as_ref(), "node_modules" | "target" | ".cache" | ".cargo" | ".rustup" | "snap")
-            {
-                walk(&e.path(), depth - 1, out);
-            }
-        }
+    add(home.join(".wine"));
+    // Folders holding one prefix per subfolder.
+    let mut parents = vec![
+        // Linux: plain Wine, PlayOnLinux, Bottles (native and Flatpak), Lutris.
+        home.join(".local/share/wineprefixes"),
+        home.join(".PlayOnLinux/wineprefix"),
+        home.join(".local/share/bottles/bottles"),
+        home.join(".var/app/com.usebottles.bottles/data/bottles/bottles"),
+        home.join("Games"),
+        // macOS: CrossOver, PlayOnMac.
+        home.join("Library/Application Support/CrossOver/Bottles"),
+        home.join("Library/PlayOnMac/wineprefix"),
+    ];
+    // Whisky's bottles are in its app container, which macOS guards with a
+    // prompt, so look there only when Whisky is installed.
+    if [PathBuf::from("/Applications/Whisky.app"), home.join("Applications/Whisky.app")].iter().any(|a| a.is_dir()) {
+        parents.push(home.join("Library/Containers/com.isaacmarovitz.Whisky/Bottles"));
     }
-    walk(&home.join(".wine"), 0, &mut out);
-    walk(&home.join(".local/share/wineprefixes"), 1, &mut out);
-    walk(&home, 3, &mut out);
+    for parent in parents {
+        let Ok(rd) = fs::read_dir(&parent) else { continue };
+        let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        dirs.sort();
+        dirs.into_iter().for_each(&mut add);
+    }
     out
 }
 
