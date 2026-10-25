@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/ftdx3000-cat", "crates/ftdx3000-rig", "crates/righelm"]
 
 [workspace.package]
-version = "0.2.8"
+version = "0.2.9"
 edition = "2024"
 license = "GPL-3.0-or-later"
 
