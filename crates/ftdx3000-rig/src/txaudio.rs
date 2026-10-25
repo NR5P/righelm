@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::RecvTimeoutError;
 use parking_lot::Mutex;
@@ -157,14 +157,23 @@ fn run(rig: &Rig, mic: &AudioDevice, gain: &AtomicU32, status: &Mutex<MicStatus>
     // Never fall back to the system output: that would be the PC speakers.
     let sink = audio::radio_devices().1.ok_or("the radio's sound card was not found (is the radio on and plugged in?)")?;
     let mut capture = Capture::start(&mic, rate).map_err(|e| format!("microphone {mic}: {e}"))?;
-    let mut play = Playback::start(&sink, rate, Duration::from_millis(120)).map_err(|e| format!("radio audio input {sink}: {e}"))?;
+    // The radio's audio input is open only while sending, and closed a
+    // second after: on the FTDX3000's USB codec (12 Mbit/s, behind the
+    // radio's own hub) playing into it at all, even silence, costs the
+    // receive side about 0.5 % of its audio, heard as crackle.
+    let mut play: Option<(Playback, Instant)> = None;
     *status.lock() = MicStatus { mic: Some(audio::describe(&mic)), level_db: -100.0, ..Default::default() };
     while !stop.load(Ordering::Relaxed) {
         if !capture.alive() {
             return Err("microphone capture stopped".into());
         }
-        if !play.alive() {
-            return Err("the radio's audio input went away".into());
+        if let Some((p, at)) = &mut play {
+            if !p.alive() {
+                return Err("the radio's audio input went away".into());
+            }
+            if at.elapsed() > Duration::from_secs(1) {
+                play = None;
+            }
         }
         match capture.frames.recv_timeout(Duration::from_millis(200)) {
             Ok(mut frame) => {
@@ -172,7 +181,14 @@ fn run(rig: &Rig, mic: &AudioDevice, gain: &AtomicU32, status: &Mutex<MicStatus>
                 let level = audio::level_dbfs(&frame);
                 let send = mic_tx_allowed(rig, true);
                 if send {
-                    play.push(frame);
+                    if play.is_none() {
+                        let p = Playback::start(&sink, rate, Duration::from_millis(120)).map_err(|e| format!("radio audio input {sink}: {e}"))?;
+                        play = Some((p, Instant::now()));
+                    }
+                    if let Some((p, at)) = &mut play {
+                        p.push(frame);
+                        *at = Instant::now();
+                    }
                 }
                 let mut s = status.lock();
                 s.level_db = level;
