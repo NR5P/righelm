@@ -262,6 +262,17 @@ impl RadioModel {
         (self.freq_min..=self.freq_max).contains(&hz)
     }
 
+    /// The radio's fixed 60 m memories (US and UK versions), as `MC` numbers:
+    /// the first of five USB channels and the first of five CW channels.
+    /// They're past P-9U and not in the CAT manual; found on an FTDX3000,
+    /// which transmits on 60 m only from these (USB or CW, fixed).
+    pub fn sixty_m_memories(&self) -> Option<(u16, u16)> {
+        match self.key {
+            "ftdx3000" => Some((118, 123)),
+            _ => None,
+        }
+    }
+
     /// The amateur band (not GEN) a frequency is in.
     pub fn band_of(&self, hz: u64) -> Option<&'static Band> {
         self.bands.iter().filter(|b| b.label != "GEN").find(|b| (b.lo..=b.hi).contains(&hz))

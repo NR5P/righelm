@@ -397,7 +397,16 @@ impl RadioState {
             "GT" => self.agc = n(at(1))?,
             "ID" => self.id = Some(n(p)?),
             "IF" => {
-                let info = ChannelInfo::parse(p)?;
+                let mut info = ChannelInfo::parse(p)?;
+                // On its 60 m memories an FTDX3000 shows (and `FA` reads)
+                // the channel centre, but `IF` gives it up to 192 Hz low
+                // (5331936 for 5332000): go by what the radio shows. Only
+                // on the memory itself (the dial doesn't move it), so a
+                // tuned frequency always reads as it is.
+                let sixty = self.model.sixty_m_memories().is_some_and(|(usb, cw)| info.mem_mode == 1 && (usb..cw + 5).contains(&info.channel));
+                if sixty {
+                    info.freq = (info.freq + 250) / 500 * 500;
+                }
                 self.freq_a = info.freq;
                 self.mode_a = info.mode.or(self.mode_a);
                 self.rx_clar = info.rx_clar;
@@ -514,6 +523,34 @@ mod tests {
         assert_eq!(s.mode_a, Some(Mode::Usb));
         assert_eq!(s.info_a.channel, 1);
         assert!(s.has("IF"));
+    }
+
+    #[test]
+    fn sixty_m_memories_read_as_shown() {
+        // What an FTDX3000 answered on each of its 60 m memories, and what
+        // its display and `FA` said.
+        let mut s = RadioState::new();
+        for (frame, shown) in [
+            ("IF11805331936+000000210000;", 5_332_000),
+            ("IF11905347808+000000210000;", 5_348_000),
+            ("IF12005358308+000000210000;", 5_358_500),
+            ("IF12105372904+000000210000;", 5_373_000),
+            ("IF12205404904+000000210000;", 5_405_000),
+            ("IF12305331968+000000310000;", 5_332_000),
+            ("IF12705404936+000000310000;", 5_405_000),
+        ] {
+            assert!(s.apply(frame));
+            assert_eq!(s.freq_a, shown, "{frame}");
+        }
+        // Ordinary memories, memory tune and the VFO keep every hertz.
+        for (frame, hz) in [
+            ("IF05007063510-090000C10000;", 7_063_510),
+            ("IF11805331936+000000220000;", 5_331_936),
+            ("IF11805331936+000000200000;", 5_331_936),
+        ] {
+            assert!(s.apply(frame));
+            assert_eq!(s.freq_a, hz, "{frame}");
+        }
     }
 
     #[test]

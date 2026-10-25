@@ -354,10 +354,10 @@ pub(crate) fn keyboard(ui: &mut Ui, rig: &Rig, s: &RadioState, step: i64) {
         tune(-step);
     }
     if pgup && s.model.has("BU") {
-        rig.send("BU0;");
+        rig.send(format!("{}BU0;", vfo_first(s)));
     }
     if pgdn && s.model.has("BD") {
-        rig.send("BD0;");
+        rig.send(format!("{}BD0;", vfo_first(s)));
     }
 }
 
@@ -389,6 +389,11 @@ fn vfo_line(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState, b: bool, live
         if !b {
             if s.info_a.mem_mode != 0 {
                 ui.label(RichText::new(format!("MEM {:03}", s.info_a.channel)).color(CYAN));
+                // A 60 m memory shows the channel centre even in USB.
+                if let Some((c, cw)) = sixty_m_memory(s) {
+                    let text = if cw { format!("{} · CW on centre", c.name.trim()) } else { format!("{} · centre; USB dial {:.1}", c.name.trim(), c.dial as f64 / 1000.0) };
+                    ui.label(RichText::new(text).color(CYAN)).on_hover_text("60 m memories show the channel centre; a USB carrier is 1.5 kHz below it");
+                }
             }
             if s.lock & 1 == 1 {
                 ui.label(RichText::new("LOCK").color(RED));
@@ -682,19 +687,22 @@ fn bands_and_modes(ui: &mut Ui, rig: &Rig, s: &RadioState) {
         if model.has("BS") {
             for b in model.bands {
                 if b.label == "60" {
-                    continue; // no band key for 60 m; tune it directly
+                    continue; // channelized: its key comes after 80, below
                 }
                 let on = cur == Some(b.code);
                 if ui.add(egui::Button::new(RichText::new(b.label).strong()).min_size(egui::vec2(38.0, 24.0)).selected(on)).clicked() {
-                    rig.send(format!("BS{:02};", b.code));
+                    rig.send(format!("{}BS{:02};", vfo_first(s), b.code));
+                }
+                if b.label == "80" {
+                    sixty_metres(ui, rig, s);
                 }
             }
         }
         if model.has("BD") && ui.add(egui::Button::new("◀").min_size(egui::vec2(38.0, 24.0))).on_hover_text("Band down (PageDown)").clicked() {
-            rig.send("BD0;");
+            rig.send(format!("{}BD0;", vfo_first(s)));
         }
         if model.has("BU") && ui.add(egui::Button::new("▶").min_size(egui::vec2(38.0, 24.0))).on_hover_text("Band up (PageUp)").clicked() {
-            rig.send("BU0;");
+            rig.send(format!("{}BU0;", vfo_first(s)));
         }
     });
     ui.add_space(4.0);
@@ -708,6 +716,133 @@ fn bands_and_modes(ui: &mut Ui, rig: &Rig, s: &RadioState) {
             }
         }
     });
+}
+
+/// What to send before a band change: in memory mode the radio ignores
+/// band keys, so first `VM;` (the V/M key, a toggle) to get back to VFO.
+fn vfo_first(s: &RadioState) -> &'static str {
+    if s.info_a.mem_mode != 0 && s.model.has("VM") { "VM;" } else { "" }
+}
+
+/// A place to operate on 60 m.
+struct SixtyM {
+    name: &'static str,
+    /// USB dial (carrier) frequency and centre, in Hz.
+    dial: u64,
+    centre: u64,
+    /// The most transmitter power, in watts, that keeps under the ERP limit
+    /// with a dipole (FCC presumes 0 dBd).
+    watts: u8,
+}
+
+/// US 60 m since 13 February 2026 (Part 97.303(h), 97.313(i)): four
+/// channels at 100 W ERP, and the 5351.5-5366.5 kHz segment at 9.15 W ERP,
+/// shown at its usual spot (FT8's dial frequency). Named and tuned as the
+/// ARRL charts have them: channels 1, 2, 4 and 5 kept their numbers, the
+/// segment took channel 3's place. In frequency order, which is also the
+/// order of the radios' own 60 m memories.
+const SIXTY_M: [SixtyM; 5] = [
+    SixtyM { name: "Ch 1", dial: 5_330_500, centre: 5_332_000, watts: 100 },
+    SixtyM { name: "Ch 2", dial: 5_346_500, centre: 5_348_000, watts: 100 },
+    SixtyM { name: "Seg ", dial: 5_357_000, centre: 5_358_500, watts: 9 },
+    SixtyM { name: "Ch 4", dial: 5_371_500, centre: 5_373_000, watts: 100 },
+    SixtyM { name: "Ch 5", dial: 5_403_500, centre: 5_405_000, watts: 100 },
+];
+
+/// The 60 m place of the radio's own 60 m memory VFO-A is on, and whether
+/// it's a CW one.
+fn sixty_m_memory(s: &RadioState) -> Option<(&'static SixtyM, bool)> {
+    let (usb, cw) = s.model.sixty_m_memories()?;
+    let ch = s.info_a.channel;
+    match ch.checked_sub(usb).filter(|i| (*i as usize) < SIXTY_M.len()) {
+        Some(i) => Some((&SIXTY_M[i as usize], false)),
+        None => ch.checked_sub(cw).filter(|i| (*i as usize) < SIXTY_M.len()).map(|i| (&SIXTY_M[i as usize], true)),
+    }
+}
+
+/// The 60 m key: 60 m is channelized, so instead of a band change it opens
+/// a list of the channels, in the mode the channel needs: CW on the channel
+/// centre; data stays in DATA-USB on the dial frequency (the audio centred
+/// on the channel); voice and anything else goes to USB, the only voice
+/// mode allowed there. A radio with its own 60 m memories recalls those,
+/// USB or CW, the only modes they take. Power comes down to
+/// the legal limit if it's above it; it's never raised, and never held
+/// down if it's turned up afterwards.
+fn sixty_metres(ui: &mut Ui, rig: &Rig, s: &RadioState) {
+    let on = (5_250_000..=5_450_000).contains(&s.freq_a);
+    let key = egui::Button::new(RichText::new("60").strong()).min_size(egui::vec2(38.0, 24.0)).selected(on);
+    let memories = s.model.sixty_m_memories().filter(|_| s.model.has("MC"));
+    let (r, _) = egui::containers::menu::MenuButton::from_button(key).ui(ui, |ui| {
+        ui.label(RichText::new("60 m — US").strong().color(AMBER));
+        for (i, c) in SIXTY_M.iter().enumerate() {
+            let (dial, centre) = (c.dial, c.centre);
+            let (hz, mode) = match s.mode_a {
+                Some(m @ (Mode::Cw | Mode::CwR)) => (centre, m),
+                Some(Mode::DataUsb) => (dial, Mode::DataUsb),
+                _ => (dial, Mode::Usb),
+            };
+            // A radio with 60 m memories transmits there only from them (an
+            // FTDX3000 keys up on the VFO but puts out nothing), so data
+            // goes to the USB memory too.
+            let channel = memories.map(|(usb, cw)| match mode {
+                Mode::Cw | Mode::CwR => cw + i as u16,
+                _ => usb + i as u16,
+            });
+            let here = match channel {
+                Some(ch) => s.info_a.mem_mode != 0 && s.info_a.channel == ch,
+                None => s.info_a.mem_mode == 0 && s.freq_a == hz,
+            };
+            // The memories are USB or CW, nothing else.
+            let shown_mode = match (channel, mode) {
+                (Some(_), Mode::Cw | Mode::CwR) => Mode::Cw,
+                (Some(_), _) => Mode::Usb,
+                (None, m) => m,
+            };
+            // Where the dial goes and where the signal is: a USB (or data)
+            // carrier sits 1.5 kHz below the centre, CW on it. A memory
+            // shows the centre whatever the mode.
+            let freqs = match shown_mode {
+                Mode::Cw | Mode::CwR => format!("{:>6.1} on centre      ", centre as f64 / 1000.0),
+                _ => format!("{:>6.1} → centre {:.1}", dial as f64 / 1000.0, centre as f64 / 1000.0),
+            };
+            let label = format!(
+                "{}   {}   {:<6} ≤{:>3} W{}",
+                c.name,
+                freqs,
+                shown_mode.label(),
+                c.watts,
+                if channel.is_some() { "   MEM" } else { "" }
+            );
+            let limit = if c.watts < 100 { "the 5351.5-5366.5 kHz segment: 9.15 W ERP" } else { "a channel: 100 W ERP" };
+            let r = ui.add(egui::Button::new(RichText::new(label).monospace()).selected(here));
+            let r = match channel {
+                Some(ch) => r.on_hover_text(format!("Recall the radio's own 60 m memory ({ch}); {limit}")),
+                None => r.on_hover_text(format!("Tune VFO-A; {limit}")),
+            };
+            if r.clicked() {
+                if let Some(ch) = channel {
+                    rig.send(format!("MC{ch:03};"));
+                } else {
+                    // Back to VFO, then the mode before the frequency:
+                    // changing the mode moves the frequency shown (the
+                    // radio's display offset for data and CW).
+                    let vfo = vfo_first(s);
+                    if !vfo.is_empty() {
+                        rig.send(vfo);
+                    }
+                    if !vfo.is_empty() || s.mode_a != Some(mode) {
+                        rig.send(set_mode_cmd(mode));
+                    }
+                    rig.send(set_freq_cmd_for(s.model, false, hz));
+                }
+                // Down to the limit with a dipole, if above it.
+                if s.model.has("PC") && s.power > c.watts {
+                    rig.send(format!("PC{:03};", c.watts.max(s.model.caps.power.0)));
+                }
+            }
+        }
+    });
+    r.on_hover_text("60 m channels, in the right mode and power");
 }
 
 /// A slider bound to a radio value: sends `fmt(v)` whenever it moves.
