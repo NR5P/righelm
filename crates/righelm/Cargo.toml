@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 crossbeam-channel = "0.5.17"
-eframe = "0.37.0"
+eframe = { version = "0.37.0", features = ["glow"] }
 env_logger = "0.11.11"
 ftdx3000-cat.workspace = true
 ftdx3000-rig.workspace = true

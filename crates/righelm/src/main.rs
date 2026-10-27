@@ -393,7 +393,7 @@ impl eframe::App for Root {
         self.0.lock().raw_input_hook(raw_input);
     }
 
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.0.lock().on_exit();
     }
 }
@@ -456,7 +456,28 @@ fn main() -> eframe::Result {
     if demo {
         options.wgpu_options.surface.present_mode = eframe::egui_wgpu::wgpu::PresentMode::AutoNoVsync;
     }
-    eframe::run_native("RigHelm", options, Box::new(|cc| Ok(Box::new(Root(Arc::new(Mutex::new(App::new(cc))))))))
+    // `RIGHELM_RENDERER=glow` skips wgpu outright.
+    if std::env::var("RIGHELM_RENDERER").is_ok_and(|v| v.eq_ignore_ascii_case("glow")) {
+        options.renderer = eframe::Renderer::Glow;
+    }
+    let app_created = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let creator = |created: Arc<std::sync::atomic::AtomicBool>| -> eframe::AppCreator<'static> {
+        Box::new(move |cc| {
+            created.store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(Box::new(Root(Arc::new(Mutex::new(App::new(cc))))))
+        })
+    };
+    let glow_options = eframe::NativeOptions { renderer: eframe::Renderer::Glow, ..options.clone() };
+    match eframe::run_native("RigHelm", options, creator(app_created.clone())) {
+        // Macs running a newer macOS than their GPU driver supports (OpenCore
+        // Legacy Patcher) fail wgpu's Metal shader compile before the app is
+        // created; OpenGL still works there.
+        Err(eframe::Error::Wgpu(err)) if !app_created.load(std::sync::atomic::Ordering::Relaxed) => {
+            log::warn!("wgpu renderer failed ({err}); falling back to OpenGL");
+            eframe::run_native("RigHelm", glow_options, creator(app_created))
+        }
+        result => result,
+    }
 }
 
 #[cfg(test)]
