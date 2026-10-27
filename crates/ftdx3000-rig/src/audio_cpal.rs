@@ -13,6 +13,12 @@ use parking_lot::Mutex;
 
 use super::{AudioDevice, DeviceEntry, Jitter, Resampler, frame_len};
 
+/// Glitches the stream carries on through by itself: a buffer that ran short
+/// or over, or the system rerouting it. Anything else means it stopped.
+fn recovers(e: &cpal::Error) -> bool {
+    matches!(e.kind(), cpal::ErrorKind::Xrun | cpal::ErrorKind::DeviceChanged)
+}
+
 fn device_name(d: &cpal::Device) -> String {
     d.to_string()
 }
@@ -115,6 +121,10 @@ fn open_input(dev: &AudioDevice, rate: u32, tx: Sender<Vec<i16>>, ok: Arc<Atomic
     };
     let ok_err = ok.clone();
     let err = move |e: cpal::Error| {
+        if recovers(&e) {
+            log::debug!("audio input: {e}");
+            return;
+        }
         log::warn!("audio input error: {e}");
         ok_err.store(false, Ordering::Relaxed);
     };
@@ -227,6 +237,10 @@ fn open_output(dev: &AudioDevice, ring: Arc<Mutex<Option<Jitter>>>, ok: Arc<Atom
     let rate = config.sample_rate;
     let channels = config.channels as usize;
     let err = move |e: cpal::Error| {
+        if recovers(&e) {
+            log::debug!("audio output: {e}");
+            return;
+        }
         log::warn!("audio output error: {e}");
         ok.store(false, Ordering::Relaxed);
     };
@@ -293,4 +307,19 @@ pub fn radio_devices() -> (Option<AudioDevice>, Option<AudioDevice>) {
     let devs = list_devices();
     let pick = |input: bool| devs.iter().find(|d| d.input == input && is_radio(&d.label)).map(|d| d.device.clone());
     (pick(true), pick(false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cpal::ErrorKind;
+
+    #[test]
+    fn glitches_dont_stop_the_stream() {
+        assert!(recovers(&ErrorKind::Xrun.into()));
+        assert!(recovers(&ErrorKind::DeviceChanged.into()));
+        for kind in [ErrorKind::DeviceNotAvailable, ErrorKind::StreamInvalidated, ErrorKind::ResourceExhausted, ErrorKind::DeviceBusy] {
+            assert!(!recovers(&kind.into()), "{kind:?}");
+        }
+    }
 }
