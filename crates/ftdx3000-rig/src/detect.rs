@@ -500,13 +500,10 @@ mod other {
         });
         groups
             .into_iter()
-            .filter_map(|(serial, mut ports)| {
-                // Interface 0 is the Enhanced (CAT) port; without interface
-                // numbers, the first name sorts first.
-                ports.sort();
-                let cat = ports.first()?.1.clone();
+            .filter_map(|(serial, ports)| {
+                let (cat, keying) = cat_and_keying(ports)?;
                 let (bridge, hint) = kinds.get(&serial).copied().unwrap_or(("CP2105", None));
-                let keying = if bridge == "CP2105" { ports.get(1).map(|p| info(&p.1)) } else { None };
+                let keying = if bridge == "CP2105" { keying.map(|k| info(&k)) } else { None };
                 Some(DetectedRadio {
                     usb_path: serial.clone(),
                     serial_number: (!serial.is_empty()).then_some(serial),
@@ -545,9 +542,49 @@ mod other {
     }
 }
 
+/// The CAT and keying ports of one bridge, from its (interface, name) pairs.
+/// Interface 0 is the Enhanced (CAT) port; without interface numbers, the
+/// first name sorts first. With both Apple's and Silicon Labs' drivers loaded
+/// on a Mac, each interface shows up twice, so keying is the other interface,
+/// through the same driver as CAT.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn cat_and_keying(mut ports: Vec<(u8, String)>) -> Option<(String, Option<String>)> {
+    ports.sort();
+    let (cat_if, cat) = ports.first()?.clone();
+    let slab = |name: &str| name.starts_with("/dev/cu.SLAB_");
+    let keying = if cat_if == u8::MAX {
+        ports.get(1).map(|p| p.1.clone())
+    } else {
+        let mut others = ports.iter().filter(|p| p.0 != cat_if);
+        let first = others.clone().next();
+        others.find(|p| slab(&p.1) == slab(&cat)).or(first).map(|p| p.1.clone())
+    };
+    Some((cat, keying))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keying_port_with_both_mac_drivers() {
+        let ports = |names: &[(u8, &str)]| names.iter().map(|&(i, n)| (i, n.to_string())).collect::<Vec<_>>();
+        let both = ports(&[
+            (1, "/dev/cu.SLAB_USBtoUART"),
+            (0, "/dev/cu.usbserial-AH046H3M1201390"),
+            (0, "/dev/cu.SLAB_USBtoUART6"),
+            (1, "/dev/cu.usbserial-AH046H3M1201391"),
+        ]);
+        assert_eq!(
+            cat_and_keying(both),
+            Some(("/dev/cu.SLAB_USBtoUART6".into(), Some("/dev/cu.SLAB_USBtoUART".into())))
+        );
+        let apple = ports(&[(1, "/dev/cu.usbserial-X1"), (0, "/dev/cu.usbserial-X0")]);
+        assert_eq!(cat_and_keying(apple), Some(("/dev/cu.usbserial-X0".into(), Some("/dev/cu.usbserial-X1".into()))));
+        let unnumbered = ports(&[(u8::MAX, "/dev/cu.b"), (u8::MAX, "/dev/cu.a")]);
+        assert_eq!(cat_and_keying(unnumbered), Some(("/dev/cu.a".into(), Some("/dev/cu.b".into()))));
+        assert_eq!(cat_and_keying(Vec::new()), None);
+    }
 
     const PACTL: &str = r#"Sink #55
 	State: SUSPENDED
