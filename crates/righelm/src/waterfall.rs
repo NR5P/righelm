@@ -2,7 +2,7 @@
 //! with the filter passband and CW pitch overlaid. Hover shows the radio
 //! frequency of a signal; in CW, clicking a trace tunes onto it.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use eframe::egui::{self, Align2, Color32, ColorImage, FontId, Pos2, Rect, RichText, Sense, Shape, Stroke, TextureHandle, TextureOptions, Ui, vec2};
@@ -216,6 +216,11 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
     let prefs = &mut app.services.config.ui;
     let tune_step = prefs.tune_step;
     wf.ingest(ui.ctx(), tap_rate, prefs, passband(s));
+    // Draw each line when it's due, not whenever something else repaints, or
+    // the picture moves in jerks.
+    if wf.last_audio.is_some_and(|t| t.elapsed() < Duration::from_secs(1)) {
+        ui.ctx().request_repaint_after(Duration::from_millis(20 * prefs.wf_speed.clamp(1, 8) as u64));
+    }
 
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
