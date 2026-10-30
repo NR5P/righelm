@@ -1,5 +1,8 @@
 //! RigHelm — the Linux alternative to Win4Yaesu for the Yaesu FTDX3000.
 
+// No console window behind the app on Windows (debug builds keep it, for logs).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod console;
 mod cw_key;
 mod demo;

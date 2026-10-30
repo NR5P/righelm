@@ -154,6 +154,15 @@ Notes for the Mac:
    target\release\righelm.exe
    ```
 
+   To install it for your user (in `%LOCALAPPDATA%\Programs\RigHelm`, with Start menu and
+   desktop shortcuts; no administrator rights needed):
+
+   ```bash
+   powershell -ExecutionPolicy Bypass -File packaging\install-windows.ps1
+   ```
+
+   The Windows release download is a zip with the same script in it.
+
 Notes for Windows:
 
 - **Virtual ports need [com0com](https://com0com.sourceforge.net/)**, the same free virtual

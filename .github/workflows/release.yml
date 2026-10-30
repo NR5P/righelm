@@ -1,4 +1,4 @@
-# Builds the Linux and macOS downloads and attaches them to a GitHub release.
+# Builds the Linux, macOS and Windows downloads and attaches them to a GitHub release.
 # Push a tag to run it:
 #
 #   git tag v0.1.0 && git push origin v0.1.0
@@ -22,6 +22,8 @@ jobs:
             name: linux-x86_64
           - os: macos-14
             name: macos-universal
+          - os: windows-2022
+            name: windows-x86_64
     runs-on: ${{ matrix.os }}
     env:
       GH_TOKEN: ${{ github.token }}
@@ -55,7 +57,15 @@ jobs:
           done
           echo "BIN=target/universal" >> "$GITHUB_ENV"
 
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo build --release --locked
+          echo "BIN=target/release" >> "$GITHUB_ENV"
+
       - name: Package
+        if: runner.os != 'Windows'
         run: |
           dir="righelm-$TAG-${{ matrix.name }}"
           mkdir -p "$dir/assets"
@@ -66,7 +76,23 @@ jobs:
           shasum -a 256 "$dir.tar.gz" > "$dir.tar.gz.sha256"
           echo "ASSET=$dir.tar.gz" >> "$GITHUB_ENV"
 
+      # A zip; packaging/install-windows.ps1 in it adds the Start menu entry.
+      # righelm-sim needs a Unix pseudo-terminal, so it isn't included.
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = "righelm-$env:TAG-${{ matrix.name }}"
+          New-Item -ItemType Directory -Force "$dir/assets", "$dir/packaging" | Out-Null
+          Copy-Item "$env:BIN/righelm.exe", "$env:BIN/righelmd.exe", README.md, LICENSE $dir
+          Copy-Item assets/righelm-*.png, assets/righelm.svg "$dir/assets"
+          Copy-Item packaging/install-windows.ps1 "$dir/packaging"
+          Compress-Archive -Path $dir -DestinationPath "$dir.zip"
+          "$((Get-FileHash "$dir.zip" -Algorithm SHA256).Hash.ToLower())  $dir.zip" | Out-File -Encoding ascii "$dir.zip.sha256"
+          "ASSET=$dir.zip" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
       - name: Upload to the release
+        shell: bash
         run: |
           gh release create "$TAG" --prerelease --title "RigHelm $TAG (testing)" \
             --notes "Test build. RigHelm is still being tested; please report problems as issues." \
