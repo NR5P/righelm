@@ -709,6 +709,8 @@ mod windows_drivers {
             let Some((code, service)) = status(&id) else { continue };
             let problem = match code {
                 CM_PROB_FAILED_INSTALL => format!("has no driver installed (Device Manager error {code})"),
+                // The composite parent of a dongle; its interface 0 is checked by itself.
+                0 if service.eq_ignore_ascii_case("usbccgp") => continue,
                 0 if what == DriverFor::Scope && !service.eq_ignore_ascii_case("winusb") => match service.as_str() {
                     "" => "has no driver installed".to_string(),
                     s => format!("has the {s} driver, not WinUSB"),
