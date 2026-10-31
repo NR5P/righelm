@@ -22,12 +22,19 @@ $bin = if (Test-Path "$root\target\release\righelm.exe") { "$root\target\release
 if (-not (Test-Path "$bin\righelm.exe")) { throw "righelm.exe not found; build it first" }
 
 # RigHelm may be running from the folder we're about to overwrite.
-Get-Process righelm, righelmd -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -and $_.Path.StartsWith($Dest, [StringComparison]::OrdinalIgnoreCase) } |
-    Stop-Process -Force
+$running = Get-Process righelm, righelmd -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and $_.Path.StartsWith($Dest, [StringComparison]::OrdinalIgnoreCase) }
+if ($running) {
+    $running | Stop-Process -Force
+    $running | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
+}
 
 New-Item -ItemType Directory -Force $Dest | Out-Null
-Copy-Item "$bin\righelm.exe", "$bin\righelmd.exe" $Dest -Force
+# Windows can hold a just-closed program's file a moment longer.
+for ($try = 1; ; $try++) {
+    try { Copy-Item "$bin\righelm.exe", "$bin\righelmd.exe" $Dest -Force; break }
+    catch { if ($try -ge 20) { throw }; Start-Sleep -Milliseconds 500 }
+}
 Copy-Item "$root\README.md", "$root\LICENSE" $Dest -Force
 
 # Icon for the shortcuts: an .ico holding the PNGs as they are (Vista and
