@@ -51,6 +51,8 @@ pub struct App {
     services: Services,
     tab: Tab,
     pub radios: Vec<DetectedRadio>,
+    /// Radio and band scope USB devices with no working driver (Windows).
+    pub driver_problems: Vec<detect::DriverProblem>,
     last_detect: Instant,
     pub status: Option<(String, Instant)>,
     pub confirm: Option<Confirm>,
@@ -115,6 +117,7 @@ impl App {
             services,
             tab: Tab::Operate,
             radios: detect::detect_radios(),
+            driver_problems: detect::driver_problems(),
             last_detect: Instant::now(),
             status: None,
             confirm: None,
@@ -330,6 +333,7 @@ impl App {
         self.space_ptt(&ctx);
         if self.last_detect.elapsed() > Duration::from_secs(3) {
             self.radios = detect::detect_radios();
+            self.driver_problems = detect::driver_problems();
             self.last_detect = Instant::now();
         }
         egui::Panel::top("top").show(ui, |ui| {

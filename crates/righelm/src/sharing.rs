@@ -87,6 +87,9 @@ fn radio_section(app: &mut App, ui: &mut Ui) {
                     .color(AMBER),
             );
         }
+        for p in &app.driver_problems {
+            ui.label(RichText::new(p.text()).color(RED));
+        }
         for r in app.radios.clone() {
             ui.label(RichText::new(format!("{} on USB {} ({}) — serial {}", r.title(), r.usb_path, r.bridge, r.serial_number.as_deref().unwrap_or("?"))).strong());
             egui::Grid::new(("radio", r.usb_path.clone())).num_columns(3).spacing([12.0, 4.0]).show(ui, |ui| {

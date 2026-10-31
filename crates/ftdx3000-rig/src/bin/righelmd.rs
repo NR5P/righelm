@@ -125,6 +125,9 @@ fn print_detect() {
     if radios.is_empty() {
         println!("No radio found on USB (Silicon Labs, Icom or FTDI bridge).");
     }
+    for p in detect::driver_problems() {
+        println!("Driver problem: {}", p.text());
+    }
     for r in radios {
         println!("{} on USB {} ({}, serial {})", r.title(), r.usb_path, r.bridge, r.serial_number.as_deref().unwrap_or("?"));
         println!("  CAT port            : {}  [{}]", r.cat.dev, r.cat.stable_path());

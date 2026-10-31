@@ -171,6 +171,9 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     }
     if !live {
         ui.label(RichText::new("Not connected to the radio. Use Connect (top right) or check Ports & sharing.").color(AMBER));
+        for p in app.driver_problems.iter().filter(|p| p.what == ftdx3000_rig::detect::DriverFor::Radio) {
+            ui.label(RichText::new(p.text()).color(RED));
+        }
     }
     ui.add_enabled_ui(live, |ui| {
         egui::Panel::top("op_radio")

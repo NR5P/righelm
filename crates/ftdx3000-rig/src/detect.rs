@@ -562,9 +562,186 @@ fn cat_and_keying(mut ports: Vec<(u8, String)>) -> Option<(String, Option<String
     Some((cat, keying))
 }
 
+/// What a device with a driver problem is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriverFor {
+    /// The radio's USB serial ports (CAT and keying).
+    Radio,
+    /// The band scope's RTL-SDR dongle.
+    Scope,
+}
+
+/// A USB device RigHelm uses that is plugged in but has no working driver.
+/// Only Windows needs one installed by hand: Linux and macOS have them built
+/// in, so elsewhere the list is always empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriverProblem {
+    pub what: DriverFor,
+    /// "The radio's USB serial bridge (Silicon Labs CP210x)".
+    pub device: &'static str,
+    /// "has no driver installed (Device Manager error 28)".
+    pub problem: String,
+    /// What to install, and where from.
+    pub fix: &'static str,
+}
+
+impl DriverProblem {
+    pub fn text(&self) -> String {
+        format!("{} is plugged in but {}. {}", self.device, self.problem, self.fix)
+    }
+}
+
+/// USB devices RigHelm uses whose Windows driver is missing or not working.
+pub fn driver_problems() -> Vec<DriverProblem> {
+    #[cfg(windows)]
+    return windows_drivers::problems();
+    #[cfg(not(windows))]
+    return Vec::new();
+}
+
+/// The device behind a Windows device instance ID such as
+/// `USB\VID_10C4&PID_EA70&MI_00\7&9677422&0&0000`, if RigHelm uses it:
+/// what it's for, its name, and the fix.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn driver_kind(id: &str) -> Option<(DriverFor, &'static str, &'static str)> {
+    let hw = id.to_ascii_uppercase();
+    let hw = hw.split('\\').nth(1)?;
+    let field = |key: &str| hw.split('&').find_map(|f| f.strip_prefix(key)).map(str::to_string);
+    let (vid, pid, mi) = (field("VID_")?, field("PID_")?, field("MI_"));
+    Some(match (vid.as_str(), pid.as_str()) {
+        ("10C4", "EA70" | "EA60") => (
+            DriverFor::Radio,
+            "The radio's USB serial bridge (Silicon Labs CP210x)",
+            "Install the Silicon Labs CP210x driver from Windows Update (Settings → Windows Update → Advanced options → Optional updates → Driver updates) or from silabs.com, then unplug the radio's USB cable and plug it back in.",
+        ),
+        ("0403", _) => (
+            DriverFor::Radio,
+            "The USB serial bridge (FTDI)",
+            "Install the FTDI VCP driver from Windows Update (Optional updates → Driver updates) or from ftdichip.com, then unplug the USB cable and plug it back in.",
+        ),
+        ("0C26", _) => (
+            DriverFor::Radio,
+            "The Icom radio's USB ports",
+            "Install Icom's USB driver for the radio from Icom's website, then unplug the radio's USB cable and plug it back in.",
+        ),
+        // Interface 1 of these is an infrared remote receiver, not needed.
+        ("0BDA", "2838" | "2832") if mi.as_deref().is_none_or(|m| m == "00") => (
+            DriverFor::Scope,
+            "The RTL-SDR dongle",
+            "The band scope needs the WinUSB driver for it: run Zadig (zadig.akeo.ie), pick \"Bulk-In, Interface (Interface 0)\", choose WinUSB and click Install Driver.",
+        ),
+        _ => return None,
+    })
+}
+
+/// Device Manager's view of the USB devices, through cfgmgr32.
+#[cfg(windows)]
+mod windows_drivers {
+    use super::*;
+
+    const CR_SUCCESS: u32 = 0;
+    const CR_BUFFER_SMALL: u32 = 0x1a;
+    const CM_GETIDLIST_FILTER_ENUMERATOR: u32 = 0x1;
+    const CM_GETIDLIST_FILTER_PRESENT: u32 = 0x100;
+    const DN_HAS_PROBLEM: u32 = 0x400;
+    const CM_PROB_FAILED_INSTALL: u32 = 28;
+    const CM_DRP_SERVICE: u32 = 0x5;
+
+    #[link(name = "cfgmgr32")]
+    unsafe extern "system" {
+        fn CM_Get_Device_ID_List_SizeW(len: *mut u32, filter: *const u16, flags: u32) -> u32;
+        fn CM_Get_Device_ID_ListW(filter: *const u16, buf: *mut u16, len: u32, flags: u32) -> u32;
+        fn CM_Locate_DevNodeW(devinst: *mut u32, id: *const u16, flags: u32) -> u32;
+        fn CM_Get_DevNode_Status(status: *mut u32, problem: *mut u32, devinst: u32, flags: u32) -> u32;
+        fn CM_Get_DevNode_Registry_PropertyW(devinst: u32, prop: u32, kind: *mut u32, buf: *mut u16, len: *mut u32, flags: u32) -> u32;
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(Some(0)).collect()
+    }
+
+    /// Instance IDs of the USB devices plugged in now.
+    fn usb_devices() -> Vec<String> {
+        let filter = wide("USB");
+        let flags = CM_GETIDLIST_FILTER_ENUMERATOR | CM_GETIDLIST_FILTER_PRESENT;
+        // The list can grow between asking its size and reading it.
+        for _ in 0..3 {
+            let mut len = 0u32;
+            if unsafe { CM_Get_Device_ID_List_SizeW(&mut len, filter.as_ptr(), flags) } != CR_SUCCESS {
+                return Vec::new();
+            }
+            let mut buf = vec![0u16; len as usize];
+            match unsafe { CM_Get_Device_ID_ListW(filter.as_ptr(), buf.as_mut_ptr(), len, flags) } {
+                CR_SUCCESS => {
+                    return buf.split(|&c| c == 0).filter(|s| !s.is_empty()).map(String::from_utf16_lossy).collect();
+                }
+                CR_BUFFER_SMALL => continue,
+                _ => return Vec::new(),
+            }
+        }
+        Vec::new()
+    }
+
+    /// The device's problem code (0 = none) and driver service ("WinUSB").
+    fn status(id: &str) -> Option<(u32, String)> {
+        let mut dev = 0u32;
+        if unsafe { CM_Locate_DevNodeW(&mut dev, wide(id).as_ptr(), 0) } != CR_SUCCESS {
+            return None;
+        }
+        let (mut flags, mut problem) = (0u32, 0u32);
+        if unsafe { CM_Get_DevNode_Status(&mut flags, &mut problem, dev, 0) } != CR_SUCCESS {
+            return None;
+        }
+        let mut buf = [0u16; 128];
+        let mut len = std::mem::size_of_val(&buf) as u32;
+        let mut kind = 0u32;
+        let service = match unsafe { CM_Get_DevNode_Registry_PropertyW(dev, CM_DRP_SERVICE, &mut kind, buf.as_mut_ptr(), &mut len, 0) } {
+            CR_SUCCESS => String::from_utf16_lossy(&buf[..(len as usize / 2)]).trim_end_matches('\0').to_string(),
+            _ => String::new(),
+        };
+        Some((if flags & DN_HAS_PROBLEM != 0 { problem } else { 0 }, service))
+    }
+
+    pub fn problems() -> Vec<DriverProblem> {
+        let mut out: Vec<DriverProblem> = Vec::new();
+        for id in usb_devices() {
+            let Some((what, device, fix)) = driver_kind(&id) else { continue };
+            let Some((code, service)) = status(&id) else { continue };
+            let problem = match code {
+                CM_PROB_FAILED_INSTALL => format!("has no driver installed (Device Manager error {code})"),
+                0 if what == DriverFor::Scope && !service.eq_ignore_ascii_case("winusb") => match service.as_str() {
+                    "" => "has no driver installed".to_string(),
+                    s => format!("has the {s} driver, not WinUSB"),
+                },
+                0 => continue,
+                _ => format!("its driver isn't working (Device Manager error {code})"),
+            };
+            // A dual bridge has two ports with the same problem: say it once.
+            if !out.iter().any(|p| p.device == device) {
+                out.push(DriverProblem { what, device, problem, fix });
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_device_ids() {
+        let kind = |id| driver_kind(id).map(|k| k.0);
+        assert_eq!(kind(r"USB\VID_10C4&PID_EA70&MI_00\7&9677422&0&0000"), Some(DriverFor::Radio));
+        assert_eq!(kind(r"USB\VID_10C4&PID_EA70\AH046H3M120139"), Some(DriverFor::Radio));
+        assert_eq!(kind(r"USB\VID_0403&PID_6001\A1B2C3"), Some(DriverFor::Radio));
+        assert_eq!(kind(r"USB\VID_0BDA&PID_2838&MI_00\7&1&0&0000"), Some(DriverFor::Scope));
+        assert_eq!(kind(r"usb\vid_0bda&pid_2838\00000001"), Some(DriverFor::Scope));
+        // The dongle's infrared receiver, and the radio's audio codec.
+        assert_eq!(kind(r"USB\VID_0BDA&PID_2838&MI_01\7&1&0&0001"), None);
+        assert_eq!(kind(r"USB\VID_08BB&PID_29B3&MI_00\7&8A0AF86&0&0000"), None);
+        assert_eq!(kind("garbage"), None);
+    }
 
     #[test]
     fn keying_port_with_both_mac_drivers() {

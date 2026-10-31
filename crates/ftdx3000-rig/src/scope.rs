@@ -961,7 +961,10 @@ fn run(rig: &Rig, tap: &ScopeTap, config: &Mutex<ScopeConfig>, stop: &AtomicBool
                 }
             }
             Err(e) => {
-                tap.set_status(ScopeStatus { text: format!("could not open the dongle: {e}"), ..present });
+                // On Windows, usually the driver: say which one to install.
+                let driver = crate::detect::driver_problems().into_iter().find(|p| p.what == crate::detect::DriverFor::Scope);
+                let text = driver.map_or_else(|| format!("could not open the dongle: {e}"), |p| p.text());
+                tap.set_status(ScopeStatus { text, ..present });
                 sleep_unless(stop, Duration::from_secs(3));
             }
         }
