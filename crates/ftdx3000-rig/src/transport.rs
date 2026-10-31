@@ -53,6 +53,31 @@ pub const BAUD_RATES: [u32; 4] = [38400, 19200, 9600, 4800];
 /// Open the serial port with exclusive access (`TIOCEXCL`): other programs
 /// must go through our virtual ports instead of fighting over the radio.
 pub fn open_serial(s: &SerialSettings, baud: u32, flow: FlowControl) -> io::Result<Link> {
+    let (reader, writer) = open_port(s, baud, flow)?;
+    let flow_txt = match flow {
+        FlowControl::Hardware => "RTS/CTS",
+        FlowControl::None => "no handshake",
+        FlowControl::Quiet => "no handshake, RTS/DTR off",
+    };
+    Ok(Link {
+        reader,
+        writer,
+        description: format!("{} @ {baud} bps, 8N{}, {flow_txt}", s.path, s.stop_bits.clamp(1, 2)),
+    })
+}
+
+type Halves = (Box<dyn Read + Send>, Box<dyn Write + Send>);
+
+/// Windows: overlapped I/O, so writes don't wait behind the reader (see
+/// `winserial`).
+#[cfg(windows)]
+fn open_port(s: &SerialSettings, baud: u32, flow: FlowControl) -> io::Result<Halves> {
+    let (reader, writer) = crate::winserial::open(&s.path, baud, s.stop_bits, flow)?;
+    Ok((Box::new(reader), Box::new(writer)))
+}
+
+#[cfg(not(windows))]
+fn open_port(s: &SerialSettings, baud: u32, flow: FlowControl) -> io::Result<Halves> {
     // macOS sets the baud rate with an ioctl that pseudo-terminals (the
     // simulator) reject with ENOTTY; `serialport` skips it for a rate of 0.
     #[cfg(target_os = "macos")]
@@ -84,16 +109,7 @@ pub fn open_serial(s: &SerialSettings, baud: u32, flow: FlowControl) -> io::Resu
     }
     let _ = serialport::SerialPort::clear(&port, serialport::ClearBuffer::All);
     let reader = serialport::SerialPort::try_clone(&port).map_err(io::Error::other)?;
-    let flow_txt = match flow {
-        FlowControl::Hardware => "RTS/CTS",
-        FlowControl::None => "no handshake",
-        FlowControl::Quiet => "no handshake, RTS/DTR off",
-    };
-    Ok(Link {
-        reader,
-        writer: Box::new(port),
-        description: format!("{} @ {baud} bps, 8N{}, {flow_txt}", s.path, s.stop_bits.clamp(1, 2)),
-    })
+    Ok((reader, Box::new(port)))
 }
 
 /// Is `path` (or the link it points through) a macOS PTY slave, `/dev/ttysN`?
