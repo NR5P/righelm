@@ -14,7 +14,7 @@ use ftdx3000_rig::remote::RemoteServerConfig;
 use ftdx3000_rig::remote::{DEFAULT_PORT, RemoteTarget, local_addresses};
 
 use crate::App;
-use crate::widgets::{self, AMBER, CYAN, DIM, GREEN, RED};
+use crate::widgets::{self, AMBER, CYAN, DIM, GREEN, RED, ink};
 
 pub struct RemoteState {
     addr: String,
@@ -51,7 +51,7 @@ impl Default for RemoteState {
 fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new(title).strong().size(16.0).color(AMBER));
+        ui.label(RichText::new(title).strong().size(16.0).color(ink(AMBER)));
         ui.add_space(4.0);
         body(ui);
     });
@@ -118,12 +118,12 @@ fn firewall_line(app: &mut App, ui: &mut Ui, role: Role) {
         if help.commands.is_empty() {
             ui.label(RichText::new(&help.note).weak());
         } else if app.services.config.ui.firewall_ok {
-            ui.label(RichText::new(format!("✔ {} ports opened", help.firewall)).color(GREEN));
+            ui.label(RichText::new(format!("✔ {} ports opened", help.firewall)).color(ink(GREEN)));
             if ui.small_button("Show again").clicked() {
                 app.remote.fw_popup = Some(role);
             }
         } else {
-            ui.label(RichText::new(format!("⚠ {}", help.note)).color(AMBER));
+            ui.label(RichText::new(format!("⚠ {}", help.note)).color(ink(AMBER)));
             if ui.button("Show me how").clicked() {
                 app.remote.fw_popup = Some(role);
             }
@@ -146,7 +146,7 @@ fn firewall_window(app: &mut App, ui: &mut Ui) {
             ui.label("Run these in a terminal (they ask for your password):");
             for c in &help.commands {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(c).monospace().color(CYAN));
+                    ui.label(RichText::new(c).monospace().color(ink(CYAN)));
                     if ui.small_button("Copy").clicked() {
                         ui.ctx().copy_text(c.clone());
                     }
@@ -176,14 +176,14 @@ fn firewall_window(app: &mut App, ui: &mut Ui) {
             let result = app.remote.fw_result.lock().unwrap().clone();
             match result {
                 Some(Ok(())) => {
-                    ui.label(RichText::new("✔ Ports opened.").color(GREEN));
+                    ui.label(RichText::new("✔ Ports opened.").color(ink(GREEN)));
                     if !app.services.config.ui.firewall_ok {
                         app.services.config.ui.firewall_ok = true;
                         let _ = app.services.config.save();
                     }
                 }
                 Some(Err(e)) => {
-                    ui.label(RichText::new(format!("Didn't work: {e}")).color(RED));
+                    ui.label(RichText::new(format!("Didn't work: {e}")).color(ink(RED)));
                 }
                 None => {}
             }
@@ -212,7 +212,7 @@ fn client_section(app: &mut App, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 let link = app.rig().link();
                 let (c, text) = if link.is_open() { (GREEN, "● connected") } else { (AMBER, "● connecting…") };
-                ui.label(RichText::new(text).color(c));
+                ui.label(RichText::new(text).color(ink(c)));
                 ui.label(RichText::new(format!("Controlling the radio at {}", t.addr)).strong());
                 if ui.button(RichText::new("Back to local radio").strong()).clicked() {
                     app.services.use_local();
@@ -232,7 +232,7 @@ fn client_section(app: &mut App, ui: &mut Ui) {
                 let radio_col = if f.radio == "connected" { GREEN } else { AMBER };
                 ui.label(RichText::new(&f.name).strong().size(15.0));
                 ui.label(RichText::new(f.addr.to_string()).monospace());
-                ui.label(RichText::new(format!("{} {}{}{}", f.model.name, f.radio, if f.audio { " · audio" } else { "" }, if f.auth { " · password required" } else { "" })).color(radio_col));
+                ui.label(RichText::new(format!("{} {}{}{}", f.model.name, f.radio, if f.audio { " · audio" } else { "" }, if f.auth { " · password required" } else { "" })).color(ink(radio_col)));
                 if ui.button("Connect").clicked() {
                     app.remote.addr = f.addr.to_string();
                     let t = RemoteTarget { addr: f.addr.to_string(), password: app.remote.password.clone() };
@@ -281,7 +281,7 @@ fn audio_controls(app: &mut App, ui: &mut Ui) {
                     ui.label(RichText::new(format!("{} packets, {} lost", s.packets, s.lost)).weak());
                 }
                 Some(s) => {
-                    ui.label(RichText::new(s.error.clone().unwrap_or("connecting…".into())).color(AMBER));
+                    ui.label(RichText::new(s.error.clone().unwrap_or("connecting…".into())).color(ink(AMBER)));
                 }
                 None => {
                     ui.label(RichText::new("off").color(DIM));
@@ -326,7 +326,7 @@ fn server_section(app: &mut App, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut cfg.password).password(!show_password).desired_width(200.0));
                 if cfg.password.is_empty() {
-                    ui.label(RichText::new("no password: remote users can listen and tune, but never transmit").color(AMBER));
+                    ui.label(RichText::new("no password: remote users can listen and tune, but never transmit").color(ink(AMBER)));
                 }
             });
             ui.end_row();
@@ -359,7 +359,7 @@ fn server_section(app: &mut App, ui: &mut Ui) {
                 if ui.button("Revert").clicked() {
                     app.remote.server_edit = None;
                 }
-                ui.label(RichText::new("changes not applied yet").color(AMBER));
+                ui.label(RichText::new("changes not applied yet").color(ink(AMBER)));
             }
         });
         if app.services.config.remote_server.enabled {
@@ -373,16 +373,16 @@ fn server_section(app: &mut App, ui: &mut Ui) {
                     st.audio_clients.len(),
                     st.rx_audio.map(|d| format!(" — audio from {d}")).unwrap_or_default()
                 ))
-                .color(GREEN));
+                .color(ink(GREEN)));
                 if let Some(e) = st.error {
-                    ui.label(RichText::new(e).color(AMBER));
+                    ui.label(RichText::new(e).color(ink(AMBER)));
                 }
                 let port = addr.rsplit(':').next().unwrap_or("4533").to_string();
                 let ips: Vec<String> = local_addresses().into_iter().map(|ip| format!("{ip}:{port}")).collect();
-                ui.label(RichText::new(format!("This computer: {}", ips.join("   "))).color(CYAN));
+                ui.label(RichText::new(format!("This computer: {}", ips.join("   "))).color(ink(CYAN)));
             }
             Some(Err(e)) => {
-                ui.label(RichText::new(format!("error: {e}")).color(RED));
+                ui.label(RichText::new(format!("error: {e}")).color(ink(RED)));
             }
             None => {
                 ui.label(RichText::new("off").color(DIM));

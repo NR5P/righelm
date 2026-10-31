@@ -9,6 +9,31 @@ pub const RED: Color32 = Color32::from_rgb(235, 70, 60);
 pub const DIM: Color32 = Color32::from_rgb(90, 90, 96);
 pub const PANEL: Color32 = Color32::from_rgb(14, 16, 20);
 
+static LIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether this frame is drawn in the light theme (set once per frame).
+pub fn set_light(light: bool) {
+    LIGHT.store(light, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A colour for text on the page. The accents are bright for the dark
+/// displays (frequency, meters, scope) and too faint on a light page, so
+/// there they get a deeper shade of the same colour.
+pub fn ink(c: Color32) -> Color32 {
+    if !LIGHT.load(std::sync::atomic::Ordering::Relaxed) {
+        return c;
+    }
+    match c {
+        AMBER => Color32::from_rgb(170, 100, 0),
+        CYAN => Color32::from_rgb(0, 110, 170),
+        GREEN => Color32::from_rgb(20, 128, 56),
+        RED => Color32::from_rgb(196, 36, 26),
+        Color32::WHITE => Color32::from_rgb(20, 20, 24),
+        Color32::LIGHT_GRAY => Color32::from_rgb(80, 80, 86),
+        _ => c,
+    }
+}
+
 /// What the user did to a frequency display this frame.
 pub enum FreqAction {
     None,

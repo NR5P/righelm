@@ -5,7 +5,7 @@ use eframe::egui::{self, Color32, PointerButton, RichText, Sense, Ui};
 use ftdx3000_rig::cw::{Input, KeyerMode};
 
 use crate::App;
-use crate::widgets::{AMBER, DIM, RED};
+use crate::widgets::{AMBER, DIM, RED, ink};
 
 #[derive(Default)]
 pub struct CwKeyState {
@@ -46,7 +46,7 @@ pub fn settings_panel(app: &mut App, ui: &mut Ui) {
     let armed = app.services.cw().is_some();
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new("CW key").strong().size(16.0).color(AMBER));
+        ui.label(RichText::new("CW key").strong().size(16.0).color(ink(AMBER)));
         ui.horizontal(|ui| {
             let choice = |text: &str, selected: bool, on: Color32| {
                 let color = if !selected { Color32::LIGHT_GRAY } else if on == AMBER { Color32::BLACK } else { Color32::WHITE };
@@ -96,9 +96,9 @@ pub fn panel(app: &mut App, ui: &mut Ui) {
     egui::Frame::group(ui.style()).stroke(egui::Stroke::new(2.0, RED)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("● COMPUTER KEY").strong().color(RED));
+            ui.label(RichText::new("● COMPUTER KEY").strong().color(ink(RED)));
             if !st.ready && st.error.is_none() {
-                ui.label(RichText::new("opening the keying line…").color(AMBER));
+                ui.label(RichText::new("opening the keying line…").color(ink(AMBER)));
             }
             ui.separator();
             let cfg = &mut app.services.config.cw;
@@ -116,7 +116,7 @@ pub fn panel(app: &mut App, ui: &mut Ui) {
                 rearm = true;
             }
             if let Some(n) = &st.note {
-                ui.label(RichText::new(n).color(AMBER));
+                ui.label(RichText::new(n).color(ink(AMBER)));
             }
         });
 
@@ -169,13 +169,13 @@ pub fn panel(app: &mut App, ui: &mut Ui) {
                 }
                 app.cw_key.text.clear();
             }
-            if ui.button(RichText::new("Stop").color(RED)).on_hover_text("Stop sending and let go of the key (Esc)").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if ui.button(RichText::new("Stop").color(ink(RED))).on_hover_text("Stop sending and let go of the key (Esc)").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 if let Some(k) = app.services.cw() {
                     k.input(Input::Stop);
                 }
             }
             if st.sending_text {
-                ui.label(RichText::new("sending…").color(AMBER));
+                ui.label(RichText::new("sending…").color(ink(AMBER)));
             }
         });
     });

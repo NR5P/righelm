@@ -8,7 +8,7 @@ use eframe::egui::{self, ComboBox, DragValue, RichText, Ui};
 use ftdx3000_cat::RadioModel;
 use ftdx3000_cat::menu::{self, Kind, MenuItem, Value};
 
-use crate::widgets::{AMBER, DIM, RED};
+use crate::widgets::{AMBER, DIM, RED, ink};
 use crate::{App, Confirm};
 
 pub struct MenuState {
@@ -66,12 +66,12 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         app.menu.group = None;
     }
     if total == 0 {
-        ui.label(RichText::new(format!("RigHelm can't read or change the {}'s menu over CAT.", model.full_name())).color(AMBER));
+        ui.label(RichText::new(format!("RigHelm can't read or change the {}'s menu over CAT.", model.full_name())).color(ink(AMBER)));
         return;
     }
 
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("{read}/{total} items read from the {}", model.name)).color(if read >= total { crate::widgets::GREEN } else { AMBER }));
+        ui.label(RichText::new(format!("{read}/{total} items read from the {}", model.name)).color(ink(if read >= total { crate::widgets::GREEN } else { AMBER })));
         if ui.add_enabled(live, egui::Button::new("Re-read all")).clicked() {
             rig.refresh_menu();
         }
@@ -259,7 +259,7 @@ fn value_editor(app: &mut App, ui: &mut Ui, item: &MenuItem, raw: Option<&str>) 
                     rig.send(format!("EX{:03}{};", item.num, edit));
                     rig.refresh(&[&menu::read_cmd(item.num)]);
                 }
-                ui.label(RichText::new("unexpected value").color(AMBER).size(11.0));
+                ui.label(RichText::new("unexpected value").color(ink(AMBER)).size(11.0));
             });
         }
     }
@@ -282,7 +282,7 @@ fn restore_dialog(app: &mut App, ui: &mut Ui) {
                     let item = model.menu_item(*n);
                     let name = item.map(|i| i.name).unwrap_or("?");
                     let cat = cat_items.contains(n);
-                    ui.label(RichText::new(format!("{n:03} {name}")).color(if cat && !app.menu.include_cat { DIM } else { egui::Color32::WHITE }));
+                    ui.label(RichText::new(format!("{n:03} {name}")).color(ink(if cat && !app.menu.include_cat { DIM } else { egui::Color32::WHITE })));
                     ui.label(cur.as_deref().map(|r| item.map(|i| i.display(r)).unwrap_or(r.to_string())).unwrap_or("?".into()));
                     ui.label("→");
                     ui.label(item.map(|i| i.display(new)).unwrap_or(new.clone()));
@@ -295,7 +295,7 @@ fn restore_dialog(app: &mut App, ui: &mut Ui) {
             ui.checkbox(&mut app.menu.include_cat, format!("Also restore CAT settings ({}) — may disconnect this program", list.join(", ")));
         }
         ui.horizontal(|ui| {
-            if ui.button(RichText::new("Write to radio").color(RED)).clicked() {
+            if ui.button(RichText::new("Write to radio").color(ink(RED))).clicked() {
                 apply = true;
             }
             if ui.button("Cancel").clicked() {

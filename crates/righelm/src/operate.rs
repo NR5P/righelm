@@ -8,7 +8,7 @@ use ftdx3000_cat::{RadioState, set_freq_cmd_for, set_mode_cmd};
 use ftdx3000_rig::Rig;
 
 use crate::App;
-use crate::widgets::{self, AMBER, CYAN, DIM, FreqAction, GREEN, RED, button, led_button};
+use crate::widgets::{self, AMBER, CYAN, DIM, FreqAction, GREEN, RED, button, ink, led_button};
 
 pub struct OperateState {
     /// Frequency being typed: (vfo_b, text).
@@ -75,16 +75,16 @@ fn tx_status_line(app: &mut App, ui: &mut Ui) {
             ui.painter().rect_filled(fill, 2.0, if refuses { AMBER } else if frac > 0.9 { RED } else { GREEN });
             if refuses {
                 let text = if sending { "✖ NOT SENT: station refuses mic" } else { "⚠ station refuses mic" };
-                ui.add(egui::Label::new(RichText::new(text).color(AMBER).strong()).truncate()).on_hover_text(crate::settings_tab::REFUSES_MIC);
+                ui.add(egui::Label::new(RichText::new(text).color(ink(AMBER)).strong()).truncate()).on_hover_text(crate::settings_tab::REFUSES_MIC);
             } else if sending {
-                ui.label(RichText::new("● ON AIR").color(RED).strong());
+                ui.label(RichText::new("● ON AIR").color(ink(RED)).strong());
             }
             if let Some(e) = error {
-                ui.label(RichText::new("⚠").color(AMBER)).on_hover_text(e);
+                ui.label(RichText::new("⚠").color(ink(AMBER))).on_hover_text(e);
             }
         }
         if let Some(note) = key_note {
-            ui.add(egui::Label::new(RichText::new(&note).color(AMBER)).truncate()).on_hover_text(note);
+            ui.add(egui::Label::new(RichText::new(&note).color(ink(AMBER))).truncate()).on_hover_text(note);
         }
     });
 }
@@ -170,9 +170,9 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         keyboard(ui, &rig, &s, app.services.config.ui.tune_step);
     }
     if !live {
-        ui.label(RichText::new("Not connected to the radio. Use Connect (top right) or check Ports & sharing.").color(AMBER));
+        ui.label(RichText::new("Not connected to the radio. Use Connect (top right) or check Ports & sharing.").color(ink(AMBER)));
         for p in app.driver_problems.iter().filter(|p| p.what == ftdx3000_rig::detect::DriverFor::Radio) {
-            ui.label(RichText::new(p.text()).color(RED));
+            ui.label(RichText::new(p.text()).color(ink(RED)));
         }
     }
     ui.add_enabled_ui(live, |ui| {
@@ -227,7 +227,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
 /// A line saying where the band scope went, with a way back.
 fn scope_away_note(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("BAND SCOPE").strong().color(AMBER));
+        ui.label(RichText::new("BAND SCOPE").strong().color(ink(AMBER)));
         ui.label(RichText::new("is in its own window").weak());
         if ui.small_button("⤒ Put back").on_hover_text("Put the band scope back here").clicked() {
             app.services.config.ui.scope_window = false;
@@ -378,7 +378,7 @@ fn vfo_line(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState, b: bool, live
     let rx = s.rx_on_b() == b;
     let tx = (s.tx_vfo == 1) == b;
     let heading = |ui: &mut Ui| {
-        ui.label(RichText::new(if b { "VFO-B" } else { "VFO-A" }).strong().color(if b { CYAN } else { AMBER }));
+        ui.label(RichText::new(if b { "VFO-B" } else { "VFO-A" }).strong().color(ink(if b { CYAN } else { AMBER })));
         badge(ui, "RX", rx, GREEN);
         badge(ui, "TX", tx, if s.transmitting() && tx { RED } else { AMBER });
         if let Some(m) = mode {
@@ -391,15 +391,15 @@ fn vfo_line(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState, b: bool, live
         }
         if !b {
             if s.info_a.mem_mode != 0 {
-                ui.label(RichText::new(format!("MEM {:03}", s.info_a.channel)).color(CYAN));
+                ui.label(RichText::new(format!("MEM {:03}", s.info_a.channel)).color(ink(CYAN)));
                 // A 60 m memory shows the channel centre even in USB.
                 if let Some((c, cw)) = sixty_m_memory(s) {
                     let text = if cw { format!("{} · CW on centre", c.name.trim()) } else { format!("{} · centre; USB dial {:.1}", c.name.trim(), c.dial as f64 / 1000.0) };
-                    ui.label(RichText::new(text).color(CYAN)).on_hover_text("60 m memories show the channel centre; a USB carrier is 1.5 kHz below it");
+                    ui.label(RichText::new(text).color(ink(CYAN))).on_hover_text("60 m memories show the channel centre; a USB carrier is 1.5 kHz below it");
                 }
             }
             if s.lock & 1 == 1 {
-                ui.label(RichText::new("LOCK").color(RED));
+                ui.label(RichText::new("LOCK").color(ink(RED)));
             }
         }
     };
@@ -631,7 +631,7 @@ fn tx_block(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
         if s.model.has("AC") {
             let tuning = s.tuner == 2;
             if ui
-                .add(egui::Button::new(RichText::new("TUNE").strong()).min_size(egui::vec2(62.0, 34.0)).fill(if tuning { AMBER } else { Color32::from_rgb(40, 34, 20) }))
+                .add(egui::Button::new(RichText::new("TUNE").strong().color(if tuning { Color32::BLACK } else { Color32::LIGHT_GRAY })).min_size(egui::vec2(62.0, 34.0)).fill(if tuning { AMBER } else { Color32::from_rgb(40, 34, 20) }))
                 .on_hover_text("Starts the antenna tuner — transmits a carrier")
                 .clicked()
             {
@@ -660,7 +660,7 @@ fn tx_block(app: &mut App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
         }
         // Where the radio warns, beside the antenna it's about.
         if s.radio_info.get(&0) == Some(&true) {
-            ui.label(RichText::new("HI-SWR").strong().color(RED));
+            ui.label(RichText::new("HI-SWR").strong().color(ink(RED)));
         }
     });
     if s.model.has("MS") && !caps.meter_select.is_empty() {
@@ -776,7 +776,7 @@ fn sixty_metres(ui: &mut Ui, rig: &Rig, s: &RadioState) {
     let key = egui::Button::new(RichText::new("60").strong()).min_size(egui::vec2(38.0, 24.0)).selected(on);
     let memories = s.model.sixty_m_memories().filter(|_| s.model.has("MC"));
     let (r, _) = egui::containers::menu::MenuButton::from_button(key).ui(ui, |ui| {
-        ui.label(RichText::new("60 m — US").strong().color(AMBER));
+        ui.label(RichText::new("60 m — US").strong().color(ink(AMBER)));
         for (i, c) in SIXTY_M.iter().enumerate() {
             let (dial, centre) = (c.dial, c.centre);
             let (hz, mode) = match s.mode_a {
@@ -872,7 +872,7 @@ fn group(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
         ui.spacing_mut().item_spacing.y = 4.0;
         // Sliders take what the column has left after the labels and values.
         ui.spacing_mut().slider_width = (ui.available_width() - 165.0).clamp(70.0, 260.0);
-        ui.label(RichText::new(title).strong().size(15.0).color(AMBER));
+        ui.label(RichText::new(title).strong().size(15.0).color(ink(AMBER)));
         body(ui);
     });
 }
@@ -888,12 +888,12 @@ fn filter_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing.y = 4.0;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Filter").strong().size(15.0).color(AMBER));
+            ui.label(RichText::new("Filter").strong().size(15.0).color(ink(AMBER)));
             ui.add_space(4.0);
             if class == WidthClass::Fixed {
                 ui.label(RichText::new(format!("{} width is fixed", mode.label())).weak());
             } else {
-                ui.label(RichText::new(format!("{:>4} Hz", s.width_hz().unwrap_or(0))).monospace().size(18.0).color(AMBER));
+                ui.label(RichText::new(format!("{:>4} Hz", s.width_hz().unwrap_or(0))).monospace().size(18.0).color(ink(AMBER)));
             }
             if narrow_switch {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1246,7 +1246,7 @@ fn clarifier_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
             if m.has("XT") && led_button(ui, s.tx_clar, "TX CLAR", AMBER) {
                 rig.send(format!("XT{};", (!s.tx_clar) as u8));
             }
-            ui.label(RichText::new(format!("{:+} Hz", s.info_a.clar_offset)).monospace().size(20.0).color(if s.rx_clar || s.tx_clar { AMBER } else { DIM }));
+            ui.label(RichText::new(format!("{:+} Hz", s.info_a.clar_offset)).monospace().size(20.0).color(ink(if s.rx_clar || s.tx_clar { AMBER } else { DIM })));
         });
         ui.horizontal_wrapped(|ui| {
             if m.has("RU") {
@@ -1271,7 +1271,7 @@ fn rotator_group(ui: &mut Ui, rig: &Rig, s: &RadioState) {
         ui.horizontal_wrapped(|ui| {
             match s.rotator {
                 Some((_, dir, speed)) => {
-                    ui.label(RichText::new(format!("{dir:>3}°")).monospace().size(22.0).color(CYAN));
+                    ui.label(RichText::new(format!("{dir:>3}°")).monospace().size(22.0).color(ink(CYAN)));
                     ui.label(RichText::new(format!("speed {speed}%")).weak());
                 }
                 None => {

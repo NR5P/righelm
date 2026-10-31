@@ -20,7 +20,7 @@ use ftdx3000_rig::scope::{Detail, ScopeRow, ScopeStatus, ScopeSubscription, Scop
 use ftdx3000_rig::{Rig, UiPrefs};
 
 use crate::waterfall::{cw_upper, passband, pitch, rf_of_audio, rx_vfo};
-use crate::widgets::{self, AMBER, RED};
+use crate::widgets::{self, AMBER, RED, ink};
 
 const COLS: usize = 1024;
 const ROWS: usize = 300;
@@ -511,7 +511,7 @@ fn feed_question(app: &mut crate::App, ui: &mut Ui) {
     let mut chosen = None;
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new("An RTL-SDR dongle is plugged in. Which of the radio's jacks is it connected to?").strong().color(AMBER));
+        ui.label(RichText::new("An RTL-SDR dongle is plugged in. Which of the radio's jacks is it connected to?").strong().color(ink(AMBER)));
         ui.horizontal_wrapped(|ui| {
             if ui.button("IF OUT (9 MHz)").on_hover_text("The radio's first IF. The picture follows the VFO.").clicked() {
                 chosen = Some(Feed::IfOut);
@@ -609,7 +609,7 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
         ui.horizontal_wrapped(|ui| {
             // Rows as tall as the buttons, so a label starting one lines up.
             ui.set_row_height(22.0);
-            ui.label(RichText::new("BAND SCOPE").strong().size(15.0).color(AMBER)).on_hover_text(&status.text);
+            ui.label(RichText::new("BAND SCOPE").strong().size(15.0).color(ink(AMBER))).on_hover_text(&status.text);
             let (text, hover) = if own_window {
                 ("⤓ Put back", "Put the band scope back on the Operate page (or just close this window)")
             } else {

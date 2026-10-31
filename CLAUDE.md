@@ -14,13 +14,16 @@ on both systems; remove this section when it's empty.
   Check: the question shows with the dongle plugged in, both buttons set the
   feed and save it, it doesn't come back after a restart, and changing the
   feed in Settings → Band scope also stops it being asked.
-- **Theme setting.** Settings → Display → Theme: Dark (the default), Light,
-  or Follow the system (`apply_theme` in `crates/righelm/src/main.rs`,
-  `UiPrefs::theme`). Before this RigHelm set only the dark colours, which
-  Windows' light mode overrode; Linux showed dark. Check: it starts dark,
-  each choice switches at once (the band scope's own window too), the choice
-  survives a restart, and Follow the system tracks the desktop's light/dark
-  setting where the desktop reports one.
+- **Theme setting.** Settings → Display → Theme: Follow the system (the
+  default), Dark or Light (`apply_theme` in `crates/righelm/src/main.rs`,
+  `UiPrefs::theme`). Text in the accent colours takes a deeper shade in
+  Light (`widgets::ink`); the frequency, meter and scope displays stay dark.
+  Check: a new config follows the desktop, each choice switches at once (the
+  band scope's own window too), the choice survives a restart, Follow the
+  system tracks the desktop changing light/dark while running, and Light
+  reads well on every tab. macOS so far: a new config follows the system
+  (dark), and Light and Dark each apply at start whatever the system is,
+  checked on the Operate page only.
 - **Band scope across band changes on RX OUT.** Windows got a fix for the
   dongle stalling after a retune (`Dongle::restart` in
   `crates/ftdx3000-rig/src/scope.rs`); macOS and Linux keep the old stop/start.

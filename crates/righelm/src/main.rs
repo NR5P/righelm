@@ -24,7 +24,7 @@ use parking_lot::Mutex;
 use ftdx3000_rig::detect::{self, DetectedRadio};
 use ftdx3000_rig::{Config, LinkState, Rig, Services};
 
-use widgets::{AMBER, GREEN, RED};
+use widgets::{AMBER, GREEN, RED, ink};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -257,9 +257,9 @@ impl App {
                 LinkState::Error(e) => (RED, e.clone()),
                 LinkState::Disconnected => (Color32::GRAY, "disconnected".into()),
             };
-            ui.label(RichText::new("●").color(dot).size(18.0)).on_hover_text(&text);
+            ui.label(RichText::new("●").color(ink(dot)).size(18.0)).on_hover_text(&text);
             ui.add(egui::Image::new(&self.logo).fit_to_exact_size(egui::vec2(26.0, 26.0)));
-            ui.label(RichText::new("RigHelm").strong().size(18.0).color(AMBER)).on_hover_text("Rig control");
+            ui.label(RichText::new("RigHelm").strong().size(18.0).color(ink(AMBER))).on_hover_text("Rig control");
             if link.is_open() {
                 ui.label(RichText::new(self.rig().model().name).strong().size(14.0)).on_hover_text(self.rig().model().full_name());
             }
@@ -302,7 +302,7 @@ impl App {
                     let on = self.rig().state().power_on != Some(false);
                     if on {
                         if self.confirm == Some(Confirm::PowerOff) {
-                            if ui.button(RichText::new("Really power off?").color(RED)).clicked() {
+                            if ui.button(RichText::new("Really power off?").color(ink(RED))).clicked() {
                                 self.rig().send("PS0;");
                                 self.confirm = None;
                             }
@@ -318,9 +318,9 @@ impl App {
                 // A passing message takes the place of the link's description.
                 let flash = self.status.as_ref().filter(|(_, at)| at.elapsed() < Duration::from_secs(6)).map(|(m, _)| m.clone());
                 let label = match flash {
-                    Some(msg) => egui::Label::new(RichText::new(msg).color(AMBER)),
+                    Some(msg) => egui::Label::new(RichText::new(msg).color(ink(AMBER))),
                     None if dot == GREEN => egui::Label::new(RichText::new(&text).weak()),
-                    None => egui::Label::new(RichText::new(&text).color(dot)),
+                    None => egui::Label::new(RichText::new(&text).color(ink(dot))),
                 };
                 ui.add(label.truncate()).on_hover_text(&text);
             });
@@ -389,6 +389,7 @@ struct Root(Shared);
 
 impl eframe::App for Root {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        widgets::set_light(ctx.theme() == egui::Theme::Light);
         self.0.lock().logic(ctx);
     }
 

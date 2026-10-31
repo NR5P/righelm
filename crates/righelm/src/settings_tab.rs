@@ -5,7 +5,7 @@ use ftdx3000_rig::audio::{self, DeviceEntry};
 use ftdx3000_rig::txaudio;
 
 use crate::App;
-use crate::widgets::{self, AMBER, DIM, GREEN, RED};
+use crate::widgets::{self, AMBER, DIM, GREEN, RED, ink};
 
 pub fn show(app: &mut App, ui: &mut Ui) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -32,7 +32,7 @@ pub fn tx_audio_panel(app: &mut App, ui: &mut Ui) {
     let on = app.services.config.tx_audio.computer_mic;
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new("Transmit audio").strong().size(16.0).color(AMBER));
+        ui.label(RichText::new("Transmit audio").strong().size(16.0).color(ink(AMBER)));
         ui.horizontal(|ui| {
             let choice = |text: &str, selected: bool| {
                 let color = if selected { Color32::BLACK } else { Color32::LIGHT_GRAY };
@@ -84,7 +84,7 @@ fn mic_sel_line(app: &App, ui: &mut Ui, computer: bool) {
     let model = rig.model();
     let roles = model.roles;
     if roles.mic_sel.is_empty() {
-        ui.label(RichText::new(format!("RigHelm doesn't know which {} setting picks the USB audio input: set it on the radio.", model.name)).color(AMBER));
+        ui.label(RichText::new(format!("RigHelm doesn't know which {} setting picks the USB audio input: set it on the radio.", model.name)).color(ink(AMBER)));
         return;
     }
     let mut parts = Vec::new();
@@ -101,7 +101,7 @@ fn mic_sel_line(app: &App, ui: &mut Ui, computer: bool) {
         parts.push(format!("{mode} {label}"));
     }
     let text = format!("Radio MIC SEL: {}", parts.join(" · "));
-    ui.label(RichText::new(text).color(if matches { GREEN } else { AMBER }));
+    ui.label(RichText::new(text).color(ink(if matches { GREEN } else { AMBER })));
 }
 
 fn mic_controls(app: &mut App, ui: &mut Ui, remote: bool) {
@@ -143,19 +143,19 @@ fn mic_controls(app: &mut App, ui: &mut Ui, remote: bool) {
             widgets::Meter { label: "MIC", fraction: frac, text: format!("{level:.0} dB"), color, ticks: &[], red_from: Some(0.9), peak: None }
                 .show(ui, 260.0);
             if sending && refuses {
-                ui.label(RichText::new("✖ NOT SENT").color(AMBER).strong());
+                ui.label(RichText::new("✖ NOT SENT").color(ink(AMBER)).strong());
             } else if sending {
-                ui.label(RichText::new("● ON AIR").color(RED).strong());
+                ui.label(RichText::new("● ON AIR").color(ink(RED)).strong());
             }
         });
         ui.end_row();
     });
     if let Some(e) = error {
-        ui.label(RichText::new(e).color(AMBER));
+        ui.label(RichText::new(e).color(ink(AMBER)));
     }
     if refuses {
         ui.label(
-            RichText::new(format!("⚠ {REFUSES_MIC}")).color(AMBER).strong(),
+            RichText::new(format!("⚠ {REFUSES_MIC}")).color(ink(AMBER)).strong(),
         );
     }
     if changed {
@@ -172,9 +172,9 @@ fn scope_panel(app: &mut App, ui: &mut Ui) {
     let before = app.services.config.scope.clone();
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new("Band scope (RTL-SDR)").strong().size(16.0).color(AMBER));
+        ui.label(RichText::new("Band scope (RTL-SDR)").strong().size(16.0).color(ink(AMBER)));
         let color = if status.running { GREEN } else if status.present { AMBER } else { DIM };
-        ui.label(RichText::new(if status.text.is_empty() { "starting…" } else { &status.text }).color(color));
+        ui.label(RichText::new(if status.text.is_empty() { "starting…" } else { &status.text }).color(ink(color)));
         if remote {
             ui.label(RichText::new("The band scope comes from the dongle on the radio's computer; it is set up there.").color(DIM));
             return;
@@ -275,14 +275,14 @@ fn display(app: &mut App, ui: &mut Ui) {
     let before = app.services.config.ui.clone();
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new("Display").strong().size(16.0).color(AMBER));
+        ui.label(RichText::new("Display").strong().size(16.0).color(ink(AMBER)));
         let prefs = &mut app.services.config.ui;
         ui.horizontal(|ui| {
             use ftdx3000_rig::services::Theme;
             ui.label("Theme");
+            ui.selectable_value(&mut prefs.theme, Theme::System, "Follow the system");
             ui.selectable_value(&mut prefs.theme, Theme::Dark, "Dark");
             ui.selectable_value(&mut prefs.theme, Theme::Light, "Light");
-            ui.selectable_value(&mut prefs.theme, Theme::System, "Follow the system");
         });
         ui.checkbox(&mut prefs.show_waterfall, "Show the audio waterfall on the Operate page");
         ui.horizontal(|ui| {
@@ -316,7 +316,7 @@ fn about(app: &App, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.add(egui::Image::new(&app.logo).fit_to_exact_size(egui::vec2(96.0, 96.0)));
             ui.vertical(|ui| {
-                ui.label(RichText::new("RigHelm").strong().size(28.0).color(AMBER));
+                ui.label(RichText::new("RigHelm").strong().size(28.0).color(ink(AMBER)));
                 ui.label(RichText::new(format!("The Linux alternative to Win4Yaesu for the Yaesu FTDX3000 — and other Yaesu, Icom, Kenwood and Elecraft radios · version {}", env!("CARGO_PKG_VERSION"))).size(14.0));
                 ui.label(RichText::new("At the helm of your rig: control, sharing and remote operation.").color(DIM));
                 ui.label(RichText::new(format!("Settings file: {}", ftdx3000_rig::Config::path().display())).color(DIM));

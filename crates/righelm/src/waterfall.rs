@@ -11,7 +11,7 @@ use ftdx3000_cat::{RadioState, set_freq_cmd};
 use ftdx3000_rig::spectrum::Spectrum;
 use ftdx3000_rig::{Rig, UiPrefs};
 
-use crate::widgets::{self, AMBER, CYAN};
+use crate::widgets::{self, AMBER, CYAN, ink};
 
 const COLS: usize = 1024;
 const ROWS: usize = 256;
@@ -227,7 +227,7 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
         ui.horizontal_wrapped(|ui| {
             // Rows as tall as the buttons, so a label starting one lines up.
             ui.set_row_height(22.0);
-            ui.label(RichText::new("AUDIO WATERFALL").strong().size(15.0).color(AMBER));
+            ui.label(RichText::new("AUDIO WATERFALL").strong().size(15.0).color(ink(AMBER)));
             ui.label("Span");
             for hz in [3000u32, 4000, 6000] {
                 if ui.selectable_label(prefs.wf_max_hz == hz, format!("{} kHz", hz / 1000)).clicked() {
@@ -257,7 +257,7 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
             prefs.wf_range_db = (prefs.wf_range_db + widgets::scroll_steps(ui, &r, 12.0) as i32).clamp(20, 120);
             let stale = wf.last_audio.is_none_or(|t| t.elapsed().as_secs_f32() > 1.0);
             if stale {
-                ui.label(RichText::new(format!("no audio — {}", source.as_deref().unwrap_or("starting…"))).color(AMBER));
+                ui.label(RichText::new(format!("no audio — {}", source.as_deref().unwrap_or("starting…"))).color(ink(AMBER)));
             }
         });
 

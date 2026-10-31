@@ -13,7 +13,7 @@ use ftdx3000_rig::vport::VirtualPortConfig;
 use ftdx3000_rig::{Config, EngineConfig};
 
 use crate::App;
-use crate::widgets::{AMBER, CYAN, DIM, GREEN, RED};
+use crate::widgets::{AMBER, CYAN, DIM, GREEN, RED, ink};
 
 #[cfg_attr(not(unix), allow(dead_code))] // the Wine fields are Unix-only
 pub struct SharingState {
@@ -53,7 +53,7 @@ fn copy_button(ui: &mut Ui, text: &str) {
 fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new(title).strong().size(16.0).color(AMBER));
+        ui.label(RichText::new(title).strong().size(16.0).color(ink(AMBER)));
         ui.add_space(4.0);
         body(ui);
     });
@@ -84,11 +84,11 @@ fn radio_section(app: &mut App, ui: &mut Ui) {
         if app.radios.is_empty() {
             ui.label(
                 RichText::new("No radio found on USB (looking for the Silicon Labs, Icom or FTDI USB bridges radios use). Is the radio's USB cable plugged in? A radio on an RS-232 adapter can be chosen below.")
-                    .color(AMBER),
+                    .color(ink(AMBER)),
             );
         }
         for p in &app.driver_problems {
-            ui.label(RichText::new(p.text()).color(RED));
+            ui.label(RichText::new(p.text()).color(ink(RED)));
         }
         for r in app.radios.clone() {
             ui.label(RichText::new(format!("{} on USB {} ({}) — serial {}", r.title(), r.usb_path, r.bridge, r.serial_number.as_deref().unwrap_or("?"))).strong());
@@ -101,7 +101,7 @@ fn radio_section(app: &mut App, ui: &mut Ui) {
                         app.sharing.engine.serial.path = r.cat.stable_path().to_string();
                     }
                     for u in &r.cat.users {
-                        ui.label(RichText::new(format!("in use by {} (pid {})", u.name, u.pid)).color(if u.pid == std::process::id() { GREEN } else { AMBER }));
+                        ui.label(RichText::new(format!("in use by {} (pid {})", u.name, u.pid)).color(ink(if u.pid == std::process::id() { GREEN } else { AMBER })));
                     }
                 });
                 ui.end_row();
@@ -128,20 +128,20 @@ fn radio_section(app: &mut App, ui: &mut Ui) {
                         }
                         if let Some((n, d)) = &a.source {
                             ui.label("  RX audio (input)");
-                            ui.label(RichText::new(d).color(CYAN)).on_hover_text(n);
+                            ui.label(RichText::new(d).color(ink(CYAN))).on_hover_text(n);
                             copy_button(ui, n);
                             ui.end_row();
                         }
                         if let Some((n, d)) = &a.sink {
                             ui.label("  TX audio (output)");
-                            ui.label(RichText::new(d).color(CYAN)).on_hover_text(n);
+                            ui.label(RichText::new(d).color(ink(CYAN))).on_hover_text(n);
                             copy_button(ui, n);
                             ui.end_row();
                         }
                     }
                     None => {
                         ui.label("Audio device");
-                        ui.label(RichText::new("not found next to the CAT bridge").color(AMBER));
+                        ui.label(RichText::new("not found next to the CAT bridge").color(ink(AMBER)));
                         ui.end_row();
                     }
                 }
@@ -180,7 +180,7 @@ fn cat_section(app: &mut App, ui: &mut Ui) {
                     }
                 });
                 if connected {
-                    ui.label(RichText::new(format!("connected: {}", connected_model.full_name())).color(CYAN));
+                    ui.label(RichText::new(format!("connected: {}", connected_model.full_name())).color(ink(CYAN)));
                 }
             })
             .response
@@ -265,7 +265,7 @@ fn cat_section(app: &mut App, ui: &mut Ui) {
                 app.services.use_local();
             }
             if remote {
-                ui.label(RichText::new("currently controlling a remote radio (see Remote tab)").color(AMBER));
+                ui.label(RichText::new("currently controlling a remote radio (see Remote tab)").color(ink(AMBER)));
             }
             ui.checkbox(&mut app.services.config.auto_connect, "Connect at start-up");
         });
@@ -326,14 +326,14 @@ fn vport_section(app: &mut App, ui: &mut Ui) {
                 match status.iter().find(|(c, _)| c.name == p.name) {
                     Some((_, Ok(s))) => {
                         if s.client_connected {
-                            ui.label(RichText::new(format!("● in use  ({} cmds{})", s.frames_in, if s.client_ai { ", AI" } else { "" })).color(GREEN))
+                            ui.label(RichText::new(format!("● in use  ({} cmds{})", s.frames_in, if s.client_ai { ", AI" } else { "" })).color(ink(GREEN)))
                                 .on_hover_text(format!("last: {}  ({})", s.last_command, s.slave_path.display()));
                         } else {
                             ui.label(RichText::new("○ waiting").color(DIM)).on_hover_text(s.slave_path.display().to_string());
                         }
                     }
                     Some((_, Err(e))) => {
-                        ui.label(RichText::new(format!("error: {e}")).color(RED));
+                        ui.label(RichText::new(format!("error: {e}")).color(ink(RED)));
                     }
                     None => {
                         ui.label(RichText::new(if p.enabled { "not started — Apply" } else { "off" }).color(DIM));
@@ -393,8 +393,8 @@ fn rigctld_section(app: &mut App, ui: &mut Ui) {
                 let _ = app.services.config.save();
             }
             match status {
-                Some(Ok((addr, n))) => ui.label(RichText::new(format!("● listening on {addr}, {n} client(s)")).color(GREEN)),
-                Some(Err(e)) => ui.label(RichText::new(format!("error: {e}")).color(RED)),
+                Some(Ok((addr, n))) => ui.label(RichText::new(format!("● listening on {addr}, {n} client(s)")).color(ink(GREEN))),
+                Some(Err(e)) => ui.label(RichText::new(format!("error: {e}")).color(ink(RED))),
                 None => ui.label(RichText::new("off").color(DIM)),
             };
         });

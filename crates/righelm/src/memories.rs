@@ -6,7 +6,7 @@ use ftdx3000_cat::ChannelInfo;
 use ftdx3000_cat::types::CTCSS_DHZ;
 
 use crate::App;
-use crate::widgets::{self, AMBER, DIM};
+use crate::widgets::{self, AMBER, DIM, ink};
 
 pub struct MemoriesState {
     /// Channels were requested from this model's radio this session.
@@ -44,13 +44,13 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     let mem = model.caps.memory;
     let name = |ch: u16| mem.name(ch);
     if !model.has("MR") {
-        ui.label(RichText::new(format!("RigHelm can't read the {}'s memory channels over CAT.", model.full_name())).color(AMBER));
+        ui.label(RichText::new(format!("RigHelm can't read the {}'s memory channels over CAT.", model.full_name())).color(ink(AMBER)));
         return;
     }
     let live = rig.link().is_open();
     let auto = live && app.memories.requested != Some(model.key) && s.memories.is_empty();
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("{} channels read", s.memories.len())).color(AMBER));
+        ui.label(RichText::new(format!("{} channels read", s.memories.len())).color(ink(AMBER)));
         if ui.add_enabled(live, egui::Button::new("Read all channels")).clicked() || auto {
             app.memories.requested = Some(model.key);
             let cmds: Vec<String> = mem.channels().map(|c| format!("MR{c:03};")).collect();
@@ -97,7 +97,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     continue;
                 }
                 let cur = s.memory_channel == ch;
-                ui.label(RichText::new(name(ch)).monospace().color(if cur { AMBER } else { egui::Color32::WHITE }));
+                ui.label(RichText::new(name(ch)).monospace().color(ink(if cur { AMBER } else { egui::Color32::WHITE })));
                 match m {
                     Some(m) => {
                         ui.label(RichText::new(widgets::format_freq(m.freq)).monospace().size(15.0));
@@ -132,7 +132,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                         return;
                     }
                     if app.memories.confirm_write == Some(ch) {
-                        if ui.add(egui::Button::new(RichText::new("Overwrite?").color(crate::widgets::RED)).small()).clicked() {
+                        if ui.add(egui::Button::new(RichText::new("Overwrite?").color(ink(widgets::RED))).small()).clicked() {
                             let info = ChannelInfo { freq: s.freq_a, mode: s.mode_a, ..s.info_a.clone() };
                             rig.send(info.to_mw(ch));
                             rig.refresh(&[&format!("MR{ch:03};")]);

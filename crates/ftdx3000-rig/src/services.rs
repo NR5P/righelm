@@ -45,11 +45,11 @@ pub struct Config {
 /// The window's colours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Theme {
+    /// Follow the system's light or dark setting.
     #[default]
+    System,
     Dark,
     Light,
-    /// Follow the system's light or dark setting.
-    System,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,7 +102,7 @@ pub struct UiPrefs {
 impl Default for UiPrefs {
     fn default() -> Self {
         Self {
-            theme: Theme::Dark,
+            theme: Theme::System,
             show_rotator: false,
             show_macros: true,
             tune_step: 10,

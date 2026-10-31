@@ -8,7 +8,7 @@ use ftdx3000_rig::engine::Dir;
 use ftdx3000_rig::{Freshness, Source};
 
 use crate::App;
-use crate::widgets::{AMBER, DIM, GREEN};
+use crate::widgets::{AMBER, DIM, GREEN, ink};
 
 pub struct ConsoleState {
     input: String,
@@ -103,9 +103,9 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             };
             ui.horizontal(|ui| {
                 ui.label(RichText::new(format!("{t:9.3}")).monospace().color(DIM));
-                ui.label(RichText::new(arrow).monospace().color(color));
+                ui.label(RichText::new(arrow).monospace().color(ink(color)));
                 ui.label(RichText::new(format!("{:<14}", e.source.as_ref().map(|s| s.to_string()).unwrap_or_default())).monospace().color(DIM));
-                ui.label(RichText::new(&e.text).monospace().color(color));
+                ui.label(RichText::new(&e.text).monospace().color(ink(color)));
             });
         }
     });
