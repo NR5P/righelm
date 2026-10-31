@@ -14,6 +14,13 @@ on both systems; remove this section when it's empty.
   Check: the question shows with the dongle plugged in, both buttons set the
   feed and save it, it doesn't come back after a restart, and changing the
   feed in Settings → Band scope also stops it being asked.
+- **Theme setting.** Settings → Display → Theme: Dark (the default), Light,
+  or Follow the system (`apply_theme` in `crates/righelm/src/main.rs`,
+  `UiPrefs::theme`). Before this RigHelm set only the dark colours, which
+  Windows' light mode overrode; Linux showed dark. Check: it starts dark,
+  each choice switches at once (the band scope's own window too), the choice
+  survives a restart, and Follow the system tracks the desktop's light/dark
+  setting where the desktop reports one.
 - **Band scope across band changes on RX OUT.** Windows got a fix for the
   dongle stalling after a retune (`Dongle::restart` in
   `crates/ftdx3000-rig/src/scope.rs`); macOS and Linux keep the old stop/start.

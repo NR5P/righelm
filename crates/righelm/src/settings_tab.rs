@@ -277,6 +277,13 @@ fn display(app: &mut App, ui: &mut Ui) {
         ui.set_width(ui.available_width());
         ui.label(RichText::new("Display").strong().size(16.0).color(AMBER));
         let prefs = &mut app.services.config.ui;
+        ui.horizontal(|ui| {
+            use ftdx3000_rig::services::Theme;
+            ui.label("Theme");
+            ui.selectable_value(&mut prefs.theme, Theme::Dark, "Dark");
+            ui.selectable_value(&mut prefs.theme, Theme::Light, "Light");
+            ui.selectable_value(&mut prefs.theme, Theme::System, "Follow the system");
+        });
         ui.checkbox(&mut prefs.show_waterfall, "Show the audio waterfall on the Operate page");
         ui.horizontal(|ui| {
             ui.label("Audio waterfall height under the band scope");
@@ -296,6 +303,9 @@ fn display(app: &mut App, ui: &mut Ui) {
         ui.checkbox(&mut prefs.show_rotator, "Show rotator control (Yaesu G-800DXA/1000DXA/2800DXA on the radio's ROT jack)");
     });
     if app.services.config.ui != before {
+        if app.services.config.ui.theme != before.theme {
+            crate::apply_theme(ui.ctx(), app.services.config.ui.theme);
+        }
         let _ = app.services.config.save();
     }
 }

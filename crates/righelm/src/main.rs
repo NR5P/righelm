@@ -95,6 +95,7 @@ impl App {
         let mut config = Config::load();
         let detected = config.autodetect_port();
         let services = Services::start(config);
+        apply_theme(&cc.egui_ctx, services.config.ui.theme);
         let ctx = cc.egui_ctx.clone();
         services.rig.set_repaint(move || ctx.request_repaint());
         if let Some(r) = &detected {
@@ -429,8 +430,19 @@ fn ptt_step(enabled: bool, typing: bool, held: bool, focused: bool, keyed: bool,
     }
 }
 
+/// Dark, light, or whichever the system uses. Setting only the dark visuals
+/// isn't enough: where the system reports light (Windows) egui switches to
+/// its light style.
+pub fn apply_theme(ctx: &egui::Context, theme: ftdx3000_rig::services::Theme) {
+    use ftdx3000_rig::services::Theme;
+    ctx.set_theme(match theme {
+        Theme::Dark => egui::ThemePreference::Dark,
+        Theme::Light => egui::ThemePreference::Light,
+        Theme::System => egui::ThemePreference::System,
+    });
+}
+
 fn setup_style(ctx: &egui::Context) {
-    ctx.set_visuals(egui::Visuals::dark());
     ctx.all_styles_mut(|style| {
         style.spacing.item_spacing = egui::vec2(6.0, 6.0);
         style.spacing.slider_width = 170.0;

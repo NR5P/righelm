@@ -42,9 +42,20 @@ pub struct Config {
     pub ui: UiPrefs,
 }
 
+/// The window's colours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Theme {
+    #[default]
+    Dark,
+    Light,
+    /// Follow the system's light or dark setting.
+    System,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiPrefs {
+    pub theme: Theme,
     /// Show the rotator panel (for a Yaesu rotator on the radio's ROT jack).
     pub show_rotator: bool,
     pub show_macros: bool,
@@ -91,6 +102,7 @@ pub struct UiPrefs {
 impl Default for UiPrefs {
     fn default() -> Self {
         Self {
+            theme: Theme::Dark,
             show_rotator: false,
             show_macros: true,
             tune_step: 10,
