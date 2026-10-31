@@ -163,13 +163,15 @@ impl Default for Config {
 }
 
 impl Config {
-    /// `$FTDX3000_CONFIG`, else `~/.config/ftdx3000/config.toml`.
+    /// `$FTDX3000_CONFIG`, else `~/.config/ftdx3000/config.toml`
+    /// (`%APPDATA%\ftdx3000\config.toml` on Windows, which has no `$HOME`).
     pub fn path() -> PathBuf {
         if let Some(p) = std::env::var_os("FTDX3000_CONFIG") {
             return PathBuf::from(p);
         }
         let base = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
+            .or_else(|| if cfg!(windows) { std::env::var_os("APPDATA").map(PathBuf::from) } else { None })
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
             .unwrap_or_else(|| PathBuf::from("."));
         base.join("ftdx3000").join("config.toml")
@@ -216,6 +218,14 @@ impl Config {
         }
         Some(first)
     }
+}
+
+/// The user's home directory, for default file locations: `$HOME`, or on
+/// Windows `%USERPROFILE%`.
+pub fn home_dir() -> String {
+    std::env::var("HOME")
+        .or_else(|_| if cfg!(windows) { std::env::var("USERPROFILE") } else { Err(std::env::VarError::NotPresent) })
+        .unwrap_or_else(|_| ".".into())
 }
 
 /// Default directory for the stable virtual-port links (Unix).

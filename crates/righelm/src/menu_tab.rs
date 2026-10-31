@@ -26,7 +26,7 @@ pub struct MenuState {
 
 impl Default for MenuState {
     fn default() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        let home = ftdx3000_rig::services::home_dir();
         Self {
             group: None,
             filter: String::new(),
@@ -42,7 +42,7 @@ impl Default for MenuState {
 
 /// The default backup file for a model.
 fn default_path(model: &RadioModel) -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let home = ftdx3000_rig::services::home_dir();
     format!("{home}/{}-menu-backup.txt", model.key)
 }
 
@@ -55,7 +55,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     let total = model.menu.len();
     // A radio of another model: its own backup file, unless one was typed.
     if app.menu.path_model != model.key {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        let home = ftdx3000_rig::services::home_dir();
         if app.menu.path.starts_with(&format!("{home}/")) && app.menu.path.ends_with("-menu-backup.txt") {
             app.menu.path = default_path(model);
         }

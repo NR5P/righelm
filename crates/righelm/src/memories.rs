@@ -18,7 +18,7 @@ pub struct MemoriesState {
 
 impl Default for MemoriesState {
     fn default() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        let home = ftdx3000_rig::services::home_dir();
         Self { requested: None, show_empty: false, csv_path: format!("{home}/ftdx3000-memories.csv"), confirm_write: None }
     }
 }
