@@ -1445,11 +1445,11 @@ dependencies = [
 
 [[package]]
 name = "ftdx3000-cat"
-version = "0.2.13"
+version = "0.2.14"
 
 [[package]]
 name = "ftdx3000-rig"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "cpal",
  "crossbeam-channel",
@@ -3313,7 +3313,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "righelm"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "crossbeam-channel",
  "eframe",
