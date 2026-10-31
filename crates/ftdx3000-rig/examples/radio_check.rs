@@ -121,7 +121,9 @@ fn main() {
     }
     ok("unchanged after writing the same values", same.is_empty(), format!("{same:?}"));
 
-    // 5. rigctld server on another port, read-only, against the real radio.
+    // 5. rigctld server on another port, read-only, against the real radio
+    // (needs Hamlib's rigctl, which the check finds on Unix).
+    #[cfg(unix)]
     if ftdx3000_rig::hamlib_check::available() {
         let cfg = ftdx3000_rig::rigctld::RigctldConfig { enabled: true, bind: "127.0.0.1:45329".into(), block_tx: true };
         let _srv = ftdx3000_rig::rigctld::RigctldServer::start(rig.clone(), cfg).expect("rigctld");
