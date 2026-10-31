@@ -504,6 +504,32 @@ fn window_contents(app: &mut crate::App, ui: &mut Ui) {
 
 /// The band scope, filling the height it's given (on the Operate page, or
 /// in its own window).
+/// The first time a dongle turns up, ask which jack it's on: RigHelm can't
+/// tell, and with the wrong one the picture shows the wrong frequencies.
+fn feed_question(app: &mut crate::App, ui: &mut Ui) {
+    use ftdx3000_rig::scope::Feed;
+    let mut chosen = None;
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new("An RTL-SDR dongle is plugged in. Which of the radio's jacks is it connected to?").strong().color(AMBER));
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("IF OUT (9 MHz)").on_hover_text("The radio's first IF. The picture follows the VFO.").clicked() {
+                chosen = Some(Feed::IfOut);
+            }
+            if ui.button("RX OUT (antenna)").on_hover_text("The receive antenna signal. The dongle tunes itself to the band.").clicked() {
+                chosen = Some(Feed::RxOut);
+            }
+        });
+        ui.label(RichText::new("You can change it later in Settings → Band scope.").weak());
+    });
+    if let Some(feed) = chosen {
+        let cfg = &mut app.services.config.scope;
+        (cfg.feed, cfg.feed_confirmed) = (feed, true);
+        app.services.apply_scope();
+        let _ = app.services.config.save();
+    }
+}
+
 pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
     let status: ScopeStatus = app.services.scope_status();
     if !app.services.config.ui.show_scope || !(status.present || status.running) {
@@ -532,6 +558,9 @@ pub fn show(app: &mut crate::App, ui: &mut Ui, rig: &Rig, s: &RadioState) {
         } else {
             ui.ctx().request_repaint_after(Duration::from_millis(50));
         }
+    }
+    if !app.services.config.scope.feed_confirmed && app.services.config.engine.remote.is_none() && status.present {
+        feed_question(app, ui);
     }
     let tap = app.services.scope_tap.clone();
     let prefs = &mut app.services.config.ui;

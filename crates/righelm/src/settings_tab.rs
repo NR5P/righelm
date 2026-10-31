@@ -263,6 +263,9 @@ fn scope_panel(app: &mut App, ui: &mut Ui) {
         );
     });
     if app.services.config.scope != before {
+        if app.services.config.scope.feed != before.feed {
+            app.services.config.scope.feed_confirmed = true;
+        }
         app.services.apply_scope();
         let _ = app.services.config.save();
     }

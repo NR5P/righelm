@@ -78,12 +78,25 @@ pub struct ScopeConfig {
     pub ppm_fine: f64,
     /// The frequency has been calibrated against broadcast carriers.
     pub calibrated: bool,
+    /// The user has said which jack the dongle is on (asked the first time
+    /// one is plugged in: the picture is wrong if `feed` is).
+    pub feed_confirmed: bool,
 }
 
 impl Default for ScopeConfig {
     fn default() -> Self {
         // The FTDX3000's first LO is above the signal, so the IF is inverted.
-        Self { enabled: true, feed: Feed::IfOut, if_hz: DEFAULT_IF_HZ, if_inverted: true, ppm: 0, serial: String::new(), ppm_fine: 0.0, calibrated: false }
+        Self {
+            enabled: true,
+            feed: Feed::IfOut,
+            if_hz: DEFAULT_IF_HZ,
+            if_inverted: true,
+            ppm: 0,
+            serial: String::new(),
+            ppm_fine: 0.0,
+            calibrated: false,
+            feed_confirmed: false,
+        }
     }
 }
 
@@ -836,6 +849,16 @@ impl Dongle {
     }
 
     fn restart<T>(&mut self, f: impl FnOnce(&mut rtlsdr_nusb::Device) -> Result<T, rtlsdr_nusb::Error>) -> Result<(), String> {
+        // On Windows a stopped stream delivers nothing once started again
+        // (RX OUT retunes froze the scope); a fresh stream does.
+        if cfg!(windows) {
+            self.rx.take().ok_or("stream closed")?.close().wait().map_err(usb_error)?;
+            f(&mut self.device).map_err(usb_error)?;
+            let mut rx = self.device.rx_stream().map_err(usb_error)?;
+            rx.start().wait().map_err(usb_error)?;
+            self.rx = Some(rx);
+            return Ok(());
+        }
         let rx = self.rx.as_mut().ok_or("stream closed")?;
         rx.stop().wait().map_err(usb_error)?;
         f(&mut self.device).map_err(usb_error)?;
